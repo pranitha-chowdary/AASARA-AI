@@ -139,6 +139,8 @@ Platform Telemetry Cross-Check: We verify against the Swiggy/Zomato API webhooks
 
 IP & Network Analysis: Fraud rings often operate via shared VPNs, emulators, or localized Wi-Fi networks. We analyze IP subnet clustering and device metadata to identify orchestrated, multi-device farming from a single physical location.
 
+***Data Integrity via Decentralized Oracles (DON):** While our sensor fusion verifies the worker's reality, our Chainlink DON secures the environmental reality. By utilizing a decentralized oracle network to fetch OpenWeather and Gov APIs, we mathematically guarantee that a syndicate cannot compromise a single centralized server to artificially trigger a "Red Alert" status to match their spoofed locations.
+
 **3. The UX Balance: Protecting the Honest Worker**
 Network degradation is a reality during severe monsoons. If an honest worker's GPS drops, their behavior might mimic an anomaly. We ensure they are not unfairly penalized through Graceful Degradation & Asynchronous Proof:
 
