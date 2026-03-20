@@ -115,7 +115,14 @@ We are integrating Machine Learning to ensure our platform remains both affordab
 
 * **Dynamic Pricing (Smart Premium):** Using predictive risk modeling, the AI analyzes hyper-local historical weather and traffic data to adjust the weekly premium. High-risk monsoon weeks will carry a slightly higher premium than stable weeks.
 * **Automated Fraud Detection:** Our AI anomaly detection engine prevents duplicate claims and analyzes location patterns to flag GPS spoofing or "rain-chasing" (e.g., logging in *after* a storm starts just to claim the payout).
+### 🧠 ML Model Architecture & Data Flow
+Our AI engine utilizes a **Multi-Model Pipeline** approach, selecting the optimal algorithm for each specific task in the parametric loop. We do not rely on a single "black box" model.
 
+| Task | Primary ML Model | Data Inputs | Output |
+| :--- | :--- | :--- | :--- |
+| **Dynamic Weekly Premium** | **XGBoost (Regressor)** | Hyper-local historical weather data (10 years), traffic patterns, seasonal trends. | An optimized micro-premium (₹20-₹75) for the upcoming week. |
+| **Anomaly & Spoof Detection** | **Isolation Forest (Unsupervised)** | Real-time device telemetry (GPS, Accelerometer, Gyroscope) via Sensor Fusion. | An "Anomaly Score." Scores >Threshold freeze automatic payouts for the Adversarial Defense layer. |
+| **Micro-Verification (fallback)** | **EfficientNet-B0 (CNN)** | Live, user-uploaded photo of the disrupted zone. | Binary classification: [Disruption Reality Confirmed / Denied]. |
 ---
 
 ##   7. Adversarial Defense & Anti-Spoofing Strategy
