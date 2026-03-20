@@ -28,9 +28,9 @@ Currently, gig workers bear this full financial loss with zero safety net. **AAS
 * **The Impact:** He loses his base pay for those 4 hours and misses his mandatory daily delivery target, costing him his daily incentive bonus. He loses ₹800 in a single day.
 * **The AASARA Solution:** Ravi pays a micro-premium of ₹40/week. When the flood hits, our platform detects the disruption via weather APIs. Our AI validates his location and automatically triggers a parametric payout of ₹700 (covering ~85% of his lost wages) directly to his UPI wallet.
 ### Financial Impact Analysis: Ravi's Disaster Week
-To demonstrate the economic necessity and viability of our platform, here is the financial breakdown of a single "disaster week" (2 days of severe flooding) with and without GigGuard-AI:
+To demonstrate the economic necessity and viability of our platform, here is the financial breakdown of a single "disaster week" (2 days of severe flooding) with and without AASARA AI:
 
-| Financial Metric | BEFORE (No Safety Net) | AFTER (GigGuard Protected) |
+| Financial Metric | BEFORE (No Safety Net) | AFTER (AASARA Protected) |
 | :--- | :--- | :--- |
 | **Gross Weekly Potential** | ₹6,000 | ₹6,000 |
 | **Operational Expenses (Fuel/Data)** | - ₹1,400 | - ₹1,400 |
@@ -57,7 +57,7 @@ To demonstrate the economic necessity and viability of our platform, here is the
   </tr>
 </table>
 
-To clearly illustrate how **GigGuard-AI** functions, we have broken down our workflow into two parts: our core real-world vision, and how we are simulating this ecosystem for the hackathon demonstration.
+To clearly illustrate how **AASARA AI** functions, we have broken down our workflow into two parts: our core real-world vision, and how we are simulating this ecosystem for the hackathon demonstration.
 
 ### Part A: The Core Idea (Real-World Operation)
 In a fully deployed real-world scenario, GigGuard operates as an invisible, automated safety net that integrates directly with the delivery partner's daily routine:
