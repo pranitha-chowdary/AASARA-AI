@@ -26,7 +26,7 @@ Currently, gig workers bear this full financial loss with zero safety net. **AAS
 ### The Scenario: Ravi's Lost Hours
 * **The Disruption:** Ravi is a Zomato delivery partner in Mumbai. A severe, unpredicted monsoon flood hits his operating zone, forcing him to stop riding for 4 hours. 
 * **The Impact:** He loses his base pay for those 4 hours and misses his mandatory daily delivery target, costing him his daily incentive bonus. He loses ₹800 in a single day.
-* **The GigGuard Solution:** Ravi pays a micro-premium of ₹40/week. When the flood hits, our platform detects the disruption via weather APIs. Our AI validates his location and automatically triggers a parametric payout of ₹700 (covering ~85% of his lost wages) directly to his UPI wallet.
+* **The AASARA Solution:** Ravi pays a micro-premium of ₹40/week. When the flood hits, our platform detects the disruption via weather APIs. Our AI validates his location and automatically triggers a parametric payout of ₹700 (covering ~85% of his lost wages) directly to his UPI wallet.
 ### Financial Impact Analysis: Ravi's Disaster Week
 To demonstrate the economic necessity and viability of our platform, here is the financial breakdown of a single "disaster week" (2 days of severe flooding) with and without GigGuard-AI:
 
