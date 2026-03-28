@@ -26,10 +26,10 @@ app = Flask(__name__)
 CORS(app)
 
 # Pre-train the ML models on startup
-print("\n🧠 AASARA ML ENGINE — Initializing (Two-Tier Plans + Fraud Engine)...")
+print("\n AASARA ML ENGINE — Initializing (Two-Tier Plans + Fraud Engine)...")
 model = get_model()
 fraud_engine = get_fraud_engine()
-print("✅ Dual ML Models + 3-Layer Fraud Engine loaded\n")
+print("Dual ML Models + 3-Layer Fraud Engine loaded\n")
 
 
 @app.route('/', methods=['GET'])
@@ -98,14 +98,14 @@ def calculate_premium():
         coverage_days = data.get('coverage_days', 7)
         historical_disruptions = data.get('historical_disruptions', [])
 
-        print(f"\n📍 Two-tier premium calculation for ({lat}, {lng})")
+        print(f"\n Two-tier premium calculation for ({lat}, {lng})")
 
         # Compute risk factors (shared between both plans)
         risk = _compute_risk_factors(lat, lng, historical_disruptions)
 
-        print(f"🌤️ Weather risk: {risk['weather_risk']['score']}/100")
-        print(f"🏘️ Zone safety: {risk['zone_safety']['safety_score']}/100")
-        print(f"⚡ Disruption: {risk['disruption_prob']:.1%}")
+        print(f"Weather risk: {risk['weather_risk']['score']}/100")
+        print(f" Zone safety: {risk['zone_safety']['safety_score']}/100")
+        print(f" Disruption: {risk['disruption_prob']:.1%}")
 
         # ML Model prediction for BOTH plans
         both_plans = model.predict_both_plans(
@@ -121,7 +121,7 @@ def calculate_premium():
         basic = both_plans['basic']
         premium = both_plans['premium']
 
-        print(f"🛡️ Basic Shield: ₹{basic['daily_premium']}/day = ₹{basic['weekly_premium']}/week")
+        print(f" Basic Shield: ₹{basic['daily_premium']}/day = ₹{basic['weekly_premium']}/week")
         print(f"⚡ Total Guard: ₹{premium['daily_premium']}/day = ₹{premium['weekly_premium']}/week")
 
         response = {
@@ -144,7 +144,7 @@ def calculate_premium():
         return jsonify(response)
 
     except Exception as e:
-        print(f"❌ Premium calculation error: {e}")
+        print(f" Premium calculation error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -224,10 +224,10 @@ def fraud_check():
             # Quick check with simulated sensors
             result = fraud_engine.quick_check(lat, lng, worker_id, platform_status)
 
-        print(f"🛡️ Fraud check for {worker_id}: score={result['final_anomaly_score']}, verdict={result['fraud_verdict']}")
+        print(f" Fraud check for {worker_id}: score={result['final_anomaly_score']}, verdict={result['fraud_verdict']}")
         return jsonify(result)
     except Exception as e:
-        print(f"❌ Fraud check error: {e}")
+        print(f" Fraud check error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -298,14 +298,14 @@ def trigger_scan():
             is_heat_trigger = temp > 42
             triggers.append({
                 'id': 'heatwave',
-                'name': '🔥 Heatwave',
+                'name': ' Heatwave',
                 'source': 'OpenWeatherMap (Real-time)',
                 'active': is_heat_trigger,
                 'severity': min(5, int((temp - 42) / 2) + 3) if is_heat_trigger else 0,
                 'data': {'temperature': temp, 'feels_like': current.get('feels_like', temp)},
             })
         except:
-            triggers.append({'id': 'heatwave', 'name': '🔥 Heatwave', 'active': False, 'error': 'No data'})
+            triggers.append({'id': 'heatwave', 'name': ' Heatwave', 'active': False, 'error': 'No data'})
 
         # Trigger 3: Severe Pollution (Simulated AQI)
         import random, hashlib
@@ -316,7 +316,7 @@ def trigger_scan():
         is_pollution_trigger = aqi > 300
         triggers.append({
             'id': 'pollution',
-            'name': '💨 Severe Pollution',
+            'name': ' Severe Pollution',
             'source': 'AQI Monitor (Simulated)',
             'active': is_pollution_trigger,
             'severity': min(5, int((aqi - 300) / 50) + 3) if is_pollution_trigger else 0,
@@ -327,7 +327,7 @@ def trigger_scan():
         is_curfew = random.random() < 0.05  # 5% chance
         triggers.append({
             'id': 'curfew',
-            'name': '🚨 Curfew / Bandh',
+            'name': ' Curfew / Bandh',
             'source': 'Government API (Simulated)',
             'active': is_curfew,
             'severity': 4 if is_curfew else 0,
@@ -338,7 +338,7 @@ def trigger_scan():
         is_outage = random.random() < 0.03  # 3% chance
         triggers.append({
             'id': 'platform_outage',
-            'name': '⛔ Platform Outage',
+            'name': 'Platform Outage',
             'source': 'Platform Health Monitor (Simulated)',
             'active': is_outage,
             'severity': 3 if is_outage else 0,
@@ -351,7 +351,7 @@ def trigger_scan():
         active_triggers = [t for t in triggers if t.get('active')]
         zone = get_zone_safety_score(lat, lng)
 
-        print(f"\n🔍 Trigger Scan: {len(active_triggers)}/{len(triggers)} active")
+        print(f"\n Trigger Scan: {len(active_triggers)}/{len(triggers)} active")
         for t in active_triggers:
             print(f"  ⚡ {t['name']} (severity: {t.get('severity', 0)})")
 
@@ -365,7 +365,7 @@ def trigger_scan():
             'zone_safety': zone,
         })
     except Exception as e:
-        print(f"❌ Trigger scan error: {e}")
+        print(f" Trigger scan error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -373,9 +373,9 @@ def trigger_scan():
 
 if __name__ == '__main__':
     port = int(os.getenv('ML_ENGINE_PORT', 5002))
-    print(f"\n🚀 AASARA ML Engine starting on port {port}")
-    print(f"📡 OpenWeatherMap API: {'Configured' if os.getenv('OPENWEATHERMAP_API_KEY') else 'Using default key'}")
-    print(f"🧠 Model: Dual GBDT v2.0 + Fraud Engine v1.0")
-    print(f"📋 Plans: Basic Shield (₹3-5/day) | Total Guard (₹6-9/day)")
-    print(f"🛡️ Fraud: 3-Layer Zero-Trust Verification\n")
+    print(f"\n AASARA ML Engine starting on port {port}")
+    print(f" OpenWeatherMap API: {'Configured' if os.getenv('OPENWEATHERMAP_API_KEY') else 'Using default key'}")
+    print(f" Model: Dual GBDT v2.0 + Fraud Engine v1.0")
+    print(f" Plans: Basic Shield (₹3-5/day) | Total Guard (₹6-9/day)")
+    print(f" Fraud: 3-Layer Zero-Trust Verification\n")
     app.run(host='0.0.0.0', port=port, debug=False)
