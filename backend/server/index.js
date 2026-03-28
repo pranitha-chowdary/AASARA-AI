@@ -8,7 +8,7 @@ const { createHmac } = require('crypto');
 const Razorpay = require('razorpay');
 require('dotenv').config();
 
-const { User, Telemetry, Worker, Disruption, Claim, PremiumHistory, Onboarding, Subscription } = require('./models/schemas');
+const { User, Telemetry, Worker, Disruption, Claim, PremiumHistory, Onboarding, Subscription, LiquidityPool } = require('./models/schemas');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -204,80 +204,173 @@ app.post('/api/onboarding/link-platform', authenticateToken, async (req, res) =>
   }
 });
 
-// Step 2: Get Premium Quote
+// Step 2: Get Premium Quote (ML-POWERED — Two-Tier Plans)
+const ML_ENGINE_URL = process.env.ML_ENGINE_URL || 'http://localhost:5002';
+
 app.post('/api/onboarding/premium-quote', authenticateToken, async (req, res) => {
   try {
-    const { startDate, endDate, weatherRisk, disruptionRisk } = req.body;
+    const { startDate, endDate, lat, lng, planType } = req.body;
 
     // Calculate days (should be 7 days)
     const start = new Date(startDate);
     const end = new Date(endDate);
-    const days = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1; // Include both start and end day
+    const days = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
 
     if (days < 1 || days > 7) {
       return res.status(400).json({ error: 'Max 7 days per subscription' });
     }
 
-    // AFFORDABLE DYNAMIC PRICING for workers - Based on Weekly Payout Cycle
-    const basePremiumPerDay = 15; // Base ₹15 per day
-    let weatherMultiplier = 1;
-    let disruptionMultiplier = 1;
-    let riskTier = '🟢 Low';
-
-    // Weather-based multiplier (percentage increase, not additive)
-    if (weatherRisk === 'monsoon') {
-      weatherMultiplier = 1.5; // 50% increase for monsoon
-      riskTier = '🔴 High Risk';
-    } else if (weatherRisk === 'heatwave') {
-      weatherMultiplier = 1.25; // 25% increase for heatwave
-      riskTier = '🟠 Medium Risk';
-    } else if (weatherRisk === 'normal') {
-      weatherMultiplier = 1; // No increase for normal weather
-      riskTier = '🟡 Low Risk';
+    // Get historical disruptions from MongoDB
+    let historicalDisruptions = [];
+    try {
+      const disruptions = await Disruption.find({ status: { $in: ['active', 'resolved'] } })
+        .sort({ timestamp: -1 })
+        .limit(50)
+        .lean();
+      historicalDisruptions = disruptions.map(d => ({
+        eventType: d.eventType,
+        timestamp: d.timestamp,
+        severity: d.severity,
+      }));
+    } catch (e) {
+      console.warn('Could not fetch historical disruptions:', e.message);
     }
 
-    // Disruption risk multiplier
-    if (disruptionRisk === 'high') {
-      disruptionMultiplier = 1.3; // 30% increase for high disruption
-      riskTier = riskTier === '🟡 Low Risk' ? '🟠 Medium Risk' : '🔴 High Risk';
-    } else {
-      disruptionMultiplier = 1; // No increase for low disruption
+    // Call ML Engine for BOTH plan quotes
+    let mlResult = null;
+    try {
+      console.log(`\n🧠 Calling ML Engine for two-tier premium quote`);
+      console.log(`📍 Location: (${lat || 'auto'}, ${lng || 'auto'})`);
+
+      const mlResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/calculate-premium`, {
+        lat: lat || 17.3850,
+        lng: lng || 78.4867,
+        coverage_days: days,
+        historical_disruptions: historicalDisruptions,
+      }, { timeout: 15000 });
+
+      mlResult = mlResponse.data;
+      console.log(`✅ ML Engine returned both plan quotes`);
+    } catch (mlError) {
+      console.warn('⚠️ ML Engine unavailable, using fallback pricing:', mlError.message);
     }
 
-    // Calculate final premium
-    const dailyPremium = Math.round(basePremiumPerDay * weatherMultiplier * disruptionMultiplier);
-    const weeklyPremium = dailyPremium * 7; // Always 7 days = 1 week
-    const totalAmount = dailyPremium * days; // In rupees
     const weekCoverage = `${start.toLocaleDateString()} to ${end.toLocaleDateString()}`;
+    const typicalWeeklyEarnings = 2500;
 
-    // Affordability context for food delivery workers
-    // Typical weekly earnings: ₹2000-4000 depending on city/platform
-    const typicalWeeklyEarnings = 2500; // Conservative estimate
-    const premiumAsPercentage = ((weeklyPremium / typicalWeeklyEarnings) * 100).toFixed(1);
+    // If ML Engine responded with both plans
+    if (mlResult && mlResult.plans) {
+      const basicPlan = mlResult.plans.basic;
+      const premiumPlan = mlResult.plans.premium;
+      const weather = mlResult.weather || {};
+      const zone = mlResult.zone || {};
+      const disruptions = mlResult.disruptions || {};
 
+      // Use selected plan or default to basic
+      const selectedPlan = planType === 'premium' ? premiumPlan : basicPlan;
+      const totalAmount = Math.round(selectedPlan.daily_premium * days);
+
+      return res.json({
+        // Both plans for comparison
+        plans: {
+          basic: {
+            ...basicPlan,
+            totalAmount: Math.round(basicPlan.daily_premium * days),
+            totalAmountPaise: Math.round(basicPlan.daily_premium * days) * 100,
+          },
+          premium: {
+            ...premiumPlan,
+            totalAmount: Math.round(premiumPlan.daily_premium * days),
+            totalAmountPaise: Math.round(premiumPlan.daily_premium * days) * 100,
+          },
+        },
+
+        // Selected plan details
+        selectedPlan: planType || 'basic',
+        weekCoverage,
+        days,
+        dailyPremium: Math.round(selectedPlan.daily_premium),
+        weeklyPremium: Math.round(selectedPlan.weekly_premium),
+        totalAmount: Math.round(totalAmount),
+        totalAmountPaise: Math.round(totalAmount) * 100,
+        riskTier: selectedPlan.risk_tier,
+        mlPowered: true,
+        confidence: selectedPlan.confidence,
+
+        // AI Risk Analysis
+        weatherRisk: weather.risk || {},
+        weatherForecast: weather.forecast?.daily || [],
+        currentWeather: weather.current || {},
+        zoneSafety: zone,
+        disruptionForecast: disruptions,
+        modelInfo: mlResult.model_info || {},
+
+        // Affordability
+        affordability: {
+          typicalWeeklyEarnings,
+          basicAsPercentage: parseFloat(((basicPlan.weekly_premium / typicalWeeklyEarnings) * 100).toFixed(1)),
+          premiumAsPercentage: parseFloat(((premiumPlan.weekly_premium / typicalWeeklyEarnings) * 100).toFixed(1)),
+          message: '✅ Both plans are under 3% of typical weekly earnings — extremely affordable',
+        },
+      });
+    }
+
+    // FALLBACK: Static pricing if ML Engine is down
     res.json({
+      plans: {
+        basic: {
+          plan_type: 'basic',
+          plan_name: 'Basic Shield',
+          plan_emoji: '🛡️',
+          plan_tagline: 'Essential protection for everyday rides',
+          daily_premium: 4,
+          weekly_premium: 28,
+          totalAmount: 4 * days,
+          totalAmountPaise: 4 * days * 100,
+          coverage_hours: 8,
+          max_claim_payout: 500,
+          claim_processing: '24 hours',
+          covers: ['Heavy Rain / Flood', 'Extreme Heat (>42°C)', 'Severe Pollution (AQI>300)'],
+          does_not_cover: ['Moderate Disruptions', 'Curfews', 'Strikes', 'Traffic Jams'],
+          risk_tier: '🟡 Moderate',
+          dynamic_coverage: { base_hours: 8, bonus_hours: 0, total_hours: 8 },
+          zone_discount: { applied: false, amount_per_day: 0, amount_per_week: 0, reason: 'Zone discount available on Total Guard plan' },
+          liquidity_pool: { your_contribution: 16.8, pool_share: '60%', message: '₹16.80 goes to the community payout pool' },
+        },
+        premium: {
+          plan_type: 'premium',
+          plan_name: 'Total Guard',
+          plan_emoji: '⚡',
+          plan_tagline: 'Complete protection with AI-powered benefits',
+          daily_premium: 7,
+          weekly_premium: 49,
+          totalAmount: 7 * days,
+          totalAmountPaise: 7 * days * 100,
+          coverage_hours: 16,
+          max_claim_payout: 1500,
+          claim_processing: 'Instant (< 2 min)',
+          covers: ['Heavy Rain / Flood', 'Extreme Heat', 'Pollution', 'Curfews', 'Strikes', 'Traffic', 'Platform Outages'],
+          does_not_cover: [],
+          risk_tier: '🟡 Moderate',
+          dynamic_coverage: { base_hours: 16, bonus_hours: 0, total_hours: 16 },
+          zone_discount: { applied: false, amount_per_day: 0, amount_per_week: 0, reason: 'No zone discount (ML engine offline)' },
+          liquidity_pool: { your_contribution: 34.3, pool_share: '70%', message: '₹34.30 goes to the community payout pool' },
+        },
+      },
+      selectedPlan: planType || 'basic',
       weekCoverage,
       days,
-      basePremiumPerDay,
-      dailyPremium,
-      weeklyPremium,
-      totalAmount,
-      totalAmountPaise: totalAmount * 100, // For Razorpay API
-      riskTier,
+      dailyPremium: planType === 'premium' ? 7 : 4,
+      weeklyPremium: planType === 'premium' ? 49 : 28,
+      totalAmount: (planType === 'premium' ? 7 : 4) * days,
+      totalAmountPaise: (planType === 'premium' ? 7 : 4) * days * 100,
+      riskTier: '🟡 Moderate',
+      mlPowered: false,
       affordability: {
         typicalWeeklyEarnings,
-        premiumAsPercentage: parseFloat(premiumAsPercentage),
-        message: premiumAsPercentage <= 5 
-          ? '✅ Very Affordable - Less than 5% of typical weekly earnings'
-          : premiumAsPercentage <= 10
-          ? '✅ Affordable - Less than 10% of typical weekly earnings'
-          : '⚠️ Plan accordingly - Around 10-15% of typical weekly earnings',
-      },
-      breakdown: {
-        basePremiumPerDay,
-        weatherMultiplier: weatherMultiplier.toFixed(2),
-        disruptionMultiplier: disruptionMultiplier.toFixed(2),
-        formula: `₹${basePremiumPerDay} × ${weatherMultiplier.toFixed(2)} × ${disruptionMultiplier.toFixed(2)} = ₹${dailyPremium}/day × 7 days = ₹${weeklyPremium}/week`,
+        basicAsPercentage: 1.1,
+        premiumAsPercentage: 2.0,
+        message: '✅ Both plans are under 3% of typical weekly earnings — extremely affordable',
       },
     });
   } catch (err) {
@@ -286,13 +379,14 @@ app.post('/api/onboarding/premium-quote', authenticateToken, async (req, res) =>
   }
 });
 
+
 // Step 2: Create REAL Razorpay Order
 app.post('/api/onboarding/create-order', authenticateToken, async (req, res) => {
   try {
     const { amount, plan } = req.body;
 
-    if (!amount || amount < 100) {
-      return res.status(400).json({ error: 'Invalid amount (min ₹100)' });
+    if (!amount || amount < 1) {
+      return res.status(400).json({ error: 'Invalid amount (min ₹1)' });
     }
 
     const user = await User.findById(req.user.userId);
@@ -1279,6 +1373,17 @@ app.get('/api/shifts/current-status', authenticateToken, async (req, res) => {
   }
 });
 
+// User: Get Personal Claims History
+app.get('/api/claims/my-claims', authenticateToken, async (req, res) => {
+  try {
+    const claims = await Claim.find({ workerId: req.user.userId }).sort({ createdAt: -1 }).lean();
+    res.json({ claims });
+  } catch (err) {
+    console.error('Error fetching personal claims:', err);
+    res.status(500).json({ error: 'Failed to fetch personal claims' });
+  }
+});
+
 // Admin: Trigger Disruption for a Worker
 app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) => {
   try {
@@ -1298,46 +1403,99 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       return res.status(400).json({ error: 'Worker is not online, cannot trigger disruption' });
     }
 
+    const claimAmount = calculateClaimAmount(disruptionType, worker.activeSubscription?.amount);
+    
     // Create disruption record
-    const disruption = {
-      disruptionId: `disruption_${Date.now()}`,
-      eventType: disruptionType, // monsoon, heatwave, curfew, pollution, strike
-      severity: severity || 3,
-      workerId: workerId,
-      affectedWorker: worker.fullName,
-      triggeredBy: 'admin',
-      status: 'active',
-      triggeredAt: new Date().toISOString(),
-      claimAmount: calculateClaimAmount(disruptionType, worker.activeSubscription?.amount),
-      claimable: true,
-    };
-
-    // For demo, store in a Disruption document
+    const disruptionId = `manual_${disruptionType}_${Date.now()}`;
     const disruptionRecord = new Disruption({
-      disruptionId: disruption.disruptionId,
+      disruptionId,
       eventType: disruptionType,
       severity: severity || 3,
       affectedWorkers: [workerId],
       status: 'active',
-      triggeredAt: new Date(),
     });
-
     await disruptionRecord.save();
 
-    // Update user document to show active disruption
-    await User.findByIdAndUpdate(
+    // Run ML Fraud Check
+    let fraudResult = { final_anomaly_score: 0, fraud_verdict: 'auto_approve' };
+    try {
+      const fraudRes = await axios.post(`${ML_ENGINE_URL}/api/ml/fraud-check`, {
+        worker_id: workerId, lat: 17.385, lng: 78.4867, platform_status: 'active',
+      }, { timeout: 10000 });
+      fraudResult = fraudRes.data;
+    } catch (e) {
+      console.warn(`⚠️ Fraud check failed:`, e.message);
+    }
+
+    const fraudScore = fraudResult.final_anomaly_score || 0;
+    const verdict = fraudResult.fraud_verdict || 'auto_approve';
+    
+    const claimStatus = verdict === 'reject' ? 'rejected' : verdict === 'micro_verify' ? 'micro_verify' : 'paid';
+    const payoutStatus = verdict === 'auto_approve' ? 'completed' : 'pending';
+
+    // Create Claim
+    const claim = new Claim({
+      transactionId: `txn_${Date.now()}_${workerId.slice(-6)}`,
       workerId,
-      {
-        $set: {
-          'activeDisruption': disruption,
+      disruptionId,
+      amount: claimAmount,
+      status: claimStatus,
+      fraudScore,
+      fraudVerdict: verdict,
+      autoTriggered: false,
+      triggerSource: 'admin',
+      payoutMethod: 'simulated',
+      payoutStatus,
+      payoutTimestamp: claimStatus === 'paid' ? new Date() : undefined,
+      workerName: worker.fullName,
+      workerEmail: worker.email,
+      disruptionType,
+    });
+    await claim.save();
+
+    // Update active disruption on worker
+    const activeDisruption = {
+      disruptionId,
+      eventType: disruptionType,
+      severity: severity || 3,
+      claimAmount,
+      claimable: true,
+      triggeredBy: 'admin',
+      triggeredAt: new Date().toISOString(),
+      status: claimStatus,
+    };
+
+    await User.findByIdAndUpdate(workerId, { $set: { activeDisruption } });
+
+    // Send push notification
+    const notification = {
+      type: claimStatus === 'paid' ? 'payout' : 'claim',
+      title: claimStatus === 'paid' ? '💰 Payout Received!' : '🚨 Claim Verification',
+      message: claimStatus === 'paid' 
+        ? `₹${claimAmount} credited for ${disruptionType} disruption.` 
+        : `Your ₹${claimAmount} claim requires verification.`,
+      amount: claimAmount,
+      read: false,
+      createdAt: new Date(),
+    };
+    await User.findByIdAndUpdate(workerId, { $push: { notifications: notification } });
+
+    // Update Liquidity Pool if paid
+    if (claimStatus === 'paid') {
+      await LiquidityPool.findOneAndUpdate(
+        { poolId: 'main_pool' },
+        { 
+          $inc: { totalPayouts: claimAmount, totalClaims: 1 },
+          $set: { lastUpdated: new Date() },
+          $push: { transactions: { $each: [{ type: 'payout', amount: claimAmount, workerId }], $slice: -100 } }
         },
-      },
-      { new: true }
-    );
+        { upsert: true }
+      );
+    }
 
     res.json({
-      message: `Disruption triggered for ${worker.fullName}`,
-      disruption,
+      message: `Disruption triggered for ${worker.fullName}. ${claimStatus === 'paid' ? 'Payout processed.' : 'Pending verification.'}`,
+      disruption: activeDisruption,
     });
   } catch (err) {
     console.error('Trigger disruption error:', err);
@@ -1392,13 +1550,416 @@ function calculateClaimAmount(disruptionType, subscriptionAmount) {
     curfew: 600,
     pollution: 400,
     strike: 800,
+    heavy_rain: 700,
+    platform_outage: 300,
   };
   return baseAmounts[disruptionType] || 500;
 }
+
+// ==================== ADMIN COMMAND CENTER ENDPOINTS ====================
+
+// Admin: Run Automated Trigger Scan (checks all 5 triggers + creates claims)
+app.post('/api/admin/run-trigger-scan', authenticateToken, async (req, res) => {
+  try {
+    const { lat, lng } = req.body;
+
+    console.log('\n🔍 === AUTOMATED TRIGGER SCAN ===' );
+
+    // Step 1: Call ML Engine trigger scan
+    let scanResult;
+    try {
+      const mlResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/trigger-scan`, {
+        lat: lat || 17.385,
+        lng: lng || 78.4867,
+      }, { timeout: 20000 });
+      scanResult = mlResponse.data;
+    } catch (e) {
+      return res.status(500).json({ error: 'ML Engine unreachable for trigger scan', details: e.message });
+    }
+
+    const activeTriggers = (scanResult.triggers || []).filter(t => t.active);
+    console.log(`⚡ Active triggers: ${activeTriggers.length}/${scanResult.triggers?.length || 0}`);
+
+    if (activeTriggers.length === 0) {
+      return res.json({
+        message: 'No active disruptions detected',
+        scan: scanResult,
+        claimsCreated: 0,
+      });
+    }
+
+    // Step 2: Find all online workers with active subscriptions
+    const onlineWorkers = await User.find({
+      userType: 'worker',
+      policyActive: true,
+      'activeSubscription.status': 'active',
+    }).lean();
+
+    console.log(`👥 Online workers with active policies: ${onlineWorkers.length}`);
+
+    // Step 3: For each active trigger, create disruptions + claims
+    const results = [];
+    for (const trigger of activeTriggers) {
+      const triggerTypeMap = {
+        heavy_rain: 'monsoon',
+        heatwave: 'heatwave',
+        pollution: 'pollution',
+        curfew: 'curfew',
+        platform_outage: 'strike',
+      };
+      const eventType = triggerTypeMap[trigger.id] || 'monsoon';
+
+      // Create disruption record
+      const disruption = new Disruption({
+        disruptionId: `auto_${trigger.id}_${Date.now()}`,
+        eventType,
+        severity: trigger.severity || 3,
+        affectedWorkers: onlineWorkers.map(w => w._id.toString()),
+        status: 'active',
+      });
+      await disruption.save();
+
+      // Create claims for each affected worker
+      for (const worker of onlineWorkers) {
+        const claimAmount = calculateClaimAmount(trigger.id, worker.activeSubscription?.amount);
+
+        // Run fraud check via ML engine
+        let fraudResult = { final_anomaly_score: 0, fraud_verdict: 'auto_approve', recommended_action: { action: 'auto_approve' } };
+        try {
+          const fraudResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/fraud-check`, {
+            worker_id: worker._id.toString(),
+            lat: lat || 17.385,
+            lng: lng || 78.4867,
+            platform_status: 'active',
+          }, { timeout: 10000 });
+          fraudResult = fraudResponse.data;
+        } catch (e) {
+          console.warn(`⚠️ Fraud check failed for ${worker.fullName}:`, e.message);
+        }
+
+        const fraudScore = fraudResult.final_anomaly_score || 0;
+        const fraudVerdict = fraudResult.fraud_verdict || 'auto_approve';
+        const needsVerification = fraudVerdict === 'micro_verify';
+
+        // Determine claim status based on fraud verdict
+        let claimStatus = 'approved';
+        let payoutStatus = 'pending';
+        if (fraudVerdict === 'reject') {
+          claimStatus = 'rejected';
+          payoutStatus = 'failed';
+        } else if (fraudVerdict === 'micro_verify') {
+          claimStatus = 'micro_verify';
+          payoutStatus = 'pending';
+        } else {
+          // Auto-approve: simulate instant payout
+          claimStatus = 'paid';
+          payoutStatus = 'completed';
+        }
+
+        const claim = new Claim({
+          transactionId: `txn_${Date.now()}_${worker._id.toString().slice(-6)}`,
+          workerId: worker._id.toString(),
+          disruptionId: disruption.disruptionId,
+          amount: claimAmount,
+          status: claimStatus,
+          fraudScore,
+          fraudVerdict,
+          fraudDetails: fraudResult,
+          autoTriggered: true,
+          triggerSource: trigger.id === 'heavy_rain' ? 'weather' : trigger.id,
+          requiresMicroVerification: needsVerification,
+          microVerificationStatus: needsVerification ? 'pending' : undefined,
+          payoutMethod: 'simulated',
+          payoutStatus,
+          payoutTimestamp: claimStatus === 'paid' ? new Date() : undefined,
+          workerName: worker.fullName,
+          workerEmail: worker.email,
+          disruptionType: eventType,
+        });
+        await claim.save();
+
+        // Set active disruption on worker
+        await User.findByIdAndUpdate(worker._id, {
+          $set: {
+            activeDisruption: {
+              disruptionId: disruption.disruptionId,
+              eventType,
+              severity: trigger.severity,
+              claimAmount,
+              claimable: true,
+              triggeredBy: 'automated',
+              triggeredAt: new Date().toISOString(),
+              status: claimStatus,
+            },
+          },
+        });
+
+        // Send payout notification to user
+        if (claimStatus === 'paid') {
+          await User.findByIdAndUpdate(worker._id, {
+            $push: {
+              notifications: {
+                type: 'payout',
+                title: '💰 Payout Received!',
+                message: `₹${claimAmount} has been credited to your account for ${trigger.name} disruption. Stay safe!`,
+                amount: claimAmount,
+                read: false,
+                createdAt: new Date(),
+              },
+            },
+          });
+        } else if (claimStatus === 'micro_verify') {
+          await User.findByIdAndUpdate(worker._id, {
+            $push: {
+              notifications: {
+                type: 'claim',
+                title: '📸 Verification Needed',
+                message: `Your claim for ₹${claimAmount} requires a quick photo verification. Please submit a timestamped photo.`,
+                amount: claimAmount,
+                read: false,
+                createdAt: new Date(),
+              },
+            },
+          });
+        }
+
+        // Update liquidity pool
+        if (claimStatus === 'paid') {
+          await LiquidityPool.findOneAndUpdate(
+            { poolId: 'main_pool' },
+            {
+              $inc: { totalPayouts: claimAmount, totalClaims: 1 },
+              $set: { lastUpdated: new Date() },
+              $push: { transactions: { $each: [{ type: 'payout', amount: claimAmount, workerId: worker._id.toString(), claimId: claim.transactionId, timestamp: new Date() }], $slice: -100 } },
+            },
+            { upsert: true, new: true }
+          );
+        }
+
+        results.push({
+          worker: worker.fullName,
+          trigger: trigger.name,
+          claimAmount,
+          fraudScore,
+          fraudVerdict,
+          claimStatus,
+          payoutStatus,
+        });
+      }
+    }
+
+    console.log(`✅ Trigger scan complete: ${results.length} claims processed`);
+
+    res.json({
+      message: `Trigger scan complete — ${activeTriggers.length} disruptions detected, ${results.length} claims processed`,
+      scan: scanResult,
+      activeTriggers: activeTriggers.length,
+      claimsCreated: results.length,
+      claims: results,
+    });
+  } catch (err) {
+    console.error('Trigger scan error:', err);
+    res.status(500).json({ error: 'Trigger scan failed', details: err.message });
+  }
+});
+
+// Admin: Get All Claims
+app.get('/api/admin/claims', authenticateToken, async (req, res) => {
+  try {
+    const claims = await Claim.find()
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    const summary = {
+      total: claims.length,
+      paid: claims.filter(c => c.status === 'paid').length,
+      pending: claims.filter(c => c.status === 'pending' || c.status === 'approved').length,
+      rejected: claims.filter(c => c.status === 'rejected').length,
+      microVerify: claims.filter(c => c.status === 'micro_verify').length,
+      totalPaidAmount: claims.filter(c => c.status === 'paid').reduce((sum, c) => sum + c.amount, 0),
+      avgFraudScore: claims.length > 0 ? Math.round(claims.reduce((sum, c) => sum + (c.fraudScore || 0), 0) / claims.length) : 0,
+    };
+
+    res.json({ claims, summary });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch claims', details: err.message });
+  }
+});
+
+// Admin: Process a Claim (approve/reject with payout)
+app.post('/api/admin/process-claim', authenticateToken, async (req, res) => {
+  try {
+    const { claimId, action } = req.body;  // action: 'approve' | 'reject'
+
+    const claim = await Claim.findOne({ transactionId: claimId });
+    if (!claim) return res.status(404).json({ error: 'Claim not found' });
+
+    if (action === 'approve') {
+      claim.status = 'paid';
+      claim.payoutStatus = 'completed';
+      claim.payoutTimestamp = new Date();
+      claim.fraudVerdict = 'admin_override';
+      await claim.save();
+
+      // Send notification
+      await User.findByIdAndUpdate(claim.workerId, {
+        $push: {
+          notifications: {
+            type: 'payout',
+            title: '💰 Payout Received!',
+            message: `₹${claim.amount} has been credited for your ${claim.disruptionType} claim. Stay safe!`,
+            amount: claim.amount,
+            read: false,
+            createdAt: new Date(),
+          },
+        },
+      });
+
+      // Update pool
+      await LiquidityPool.findOneAndUpdate(
+        { poolId: 'main_pool' },
+        {
+          $inc: { totalPayouts: claim.amount, totalClaims: 1 },
+          $set: { lastUpdated: new Date() },
+        },
+        { upsert: true }
+      );
+
+      return res.json({ message: `Claim approved & ₹${claim.amount} paid to ${claim.workerName}`, claim });
+    } else if (action === 'reject') {
+      claim.status = 'rejected';
+      claim.payoutStatus = 'failed';
+      claim.fraudVerdict = claim.fraudVerdict === 'auto_approve' ? 'admin_override' : claim.fraudVerdict;
+      await claim.save();
+
+      await User.findByIdAndUpdate(claim.workerId, {
+        $push: {
+          notifications: {
+            type: 'claim',
+            title: '❌ Claim Rejected',
+            message: `Your claim for ₹${claim.amount} was not approved after review.`,
+            amount: claim.amount,
+            read: false,
+            createdAt: new Date(),
+          },
+        },
+      });
+
+      return res.json({ message: `Claim rejected for ${claim.workerName}`, claim });
+    }
+
+    res.status(400).json({ error: 'Invalid action — use approve or reject' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to process claim', details: err.message });
+  }
+});
+
+// Admin: Get Analytics
+app.get('/api/admin/analytics', authenticateToken, async (req, res) => {
+  try {
+    const [totalWorkers, activeWorkers, totalClaims, paidClaims, rejectedClaims, microVerifyClaims, disruptions, pool] = await Promise.all([
+      User.countDocuments({ userType: 'worker' }),
+      User.countDocuments({ userType: 'worker', policyActive: true }),
+      Claim.countDocuments(),
+      Claim.find({ status: 'paid' }).lean(),
+      Claim.countDocuments({ status: 'rejected' }),
+      Claim.countDocuments({ status: 'micro_verify' }),
+      Disruption.countDocuments(),
+      LiquidityPool.findOne({ poolId: 'main_pool' }).lean(),
+    ]);
+
+    const totalPaidAmount = paidClaims.reduce((sum, c) => sum + c.amount, 0);
+    const allClaims = await Claim.find().lean();
+    const avgFraudScore = allClaims.length > 0 ? Math.round(allClaims.reduce((sum, c) => sum + (c.fraudScore || 0), 0) / allClaims.length) : 0;
+    const fraudFlagged = allClaims.filter(c => (c.fraudScore || 0) > 70).length;
+
+    // Subscription revenue
+    const subscriptions = await Subscription.find({ isActive: true }).lean();
+    const totalPremiumRevenue = subscriptions.reduce((sum, s) => sum + (s.premiumAmount || 0), 0);
+
+    res.json({
+      workers: { total: totalWorkers, active: activeWorkers, subscribed: subscriptions.length },
+      claims: {
+        total: totalClaims,
+        paid: paidClaims.length,
+        rejected: rejectedClaims,
+        microVerify: microVerifyClaims,
+        pending: totalClaims - paidClaims.length - rejectedClaims - microVerifyClaims,
+      },
+      financials: {
+        totalPremiumRevenue,
+        totalPayouts: totalPaidAmount,
+        poolBalance: pool?.totalBalance || (totalPremiumRevenue - totalPaidAmount),
+        netMargin: totalPremiumRevenue - totalPaidAmount,
+      },
+      fraud: {
+        avgFraudScore,
+        flagged: fraudFlagged,
+        detectionRate: totalClaims > 0 ? `${Math.round((fraudFlagged / totalClaims) * 100)}%` : '0%',
+      },
+      disruptions: { total: disruptions },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch analytics', details: err.message });
+  }
+});
+
+// Admin: Get All Disruptions
+app.get('/api/admin/disruptions', authenticateToken, async (req, res) => {
+  try {
+    const disruptions = await Disruption.find().sort({ createdAt: -1 }).limit(50).lean();
+    res.json({ disruptions });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch disruptions', details: err.message });
+  }
+});
+
+// Admin: Platform Lookup (simulated)
+app.post('/api/admin/platform-lookup', authenticateToken, async (req, res) => {
+  try {
+    const { workerId } = req.body;
+    const worker = await User.findById(workerId).lean();
+    if (!worker) return res.status(404).json({ error: 'Worker not found' });
+
+    const mlResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/platform-telemetry`, {
+      worker_id: workerId,
+      platform: worker.platform || 'zomato',
+      include_history: true,
+    }, { timeout: 10000 });
+
+    res.json({ worker: { fullName: worker.fullName, email: worker.email, platform: worker.platform }, platformData: mlResponse.data });
+  } catch (err) {
+    res.status(500).json({ error: 'Platform lookup failed', details: err.message });
+  }
+});
+
+// Worker: Get Notifications
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('notifications').lean();
+    const notifications = (user?.notifications || []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 20);
+    const unreadCount = notifications.filter(n => !n.read).length;
+    res.json({ notifications, unreadCount });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+// Worker: Mark Notifications Read
+app.post('/api/notifications/read', authenticateToken, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user.userId, { $set: { 'notifications.$[].read': true } });
+    res.json({ message: 'Notifications marked as read' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to mark notifications' });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`\n🚀 AASARA CORE PROCESSING GATEWAY`);
   console.log(`📍 Active on port ${PORT}`);
   console.log(`📦 Database: MongoDB Atlas`);
+  console.log(`🛡️ Fraud Detection, Trigger Automation, Parametric Claims READY`);
   console.log(`✅ Telemetry Sync, Disruption Triggers, Anomaly Detection, Payout Processing READY\n`);
 });

@@ -81,7 +81,7 @@ const disruptionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Claim Schema - Stores payout claims
+// Claim Schema - Stores payout claims (with fraud detection)
 const claimSchema = new mongoose.Schema(
   {
     transactionId: { type: String, required: true, unique: true, index: true },
@@ -91,13 +91,31 @@ const claimSchema = new mongoose.Schema(
     upiId: String,
     status: {
       type: String,
-      enum: ['pending', 'validated', 'approved', 'paid', 'rejected'],
+      enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'micro_verify'],
       default: 'pending',
     },
-    anomalyScore: Number,
-    requiresMicroVerification: Boolean,
-    microVerificationStatus: { type: String, enum: ['pending', 'approved', 'rejected'] },
+    // Fraud Detection
+    fraudScore: { type: Number, default: 0 },
+    fraudVerdict: { type: String, enum: ['auto_approve', 'micro_verify', 'reject', 'admin_override'], default: 'auto_approve' },
+    fraudDetails: { type: mongoose.Schema.Types.Mixed, default: {} },
+    // Payout
+    payoutMethod: { type: String, enum: ['razorpay', 'upi', 'simulated'], default: 'simulated' },
+    payoutId: String,
+    payoutStatus: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], default: 'pending' },
     payoutTimestamp: Date,
+    // Trigger
+    autoTriggered: { type: Boolean, default: false },
+    triggerSource: { type: String, enum: ['weather', 'heatwave', 'pollution', 'curfew', 'platform_outage', 'admin'], default: 'admin' },
+    // Micro-verification
+    anomalyScore: Number,
+    requiresMicroVerification: { type: Boolean, default: false },
+    microVerificationStatus: { type: String, enum: ['pending', 'approved', 'rejected'] },
+    microVerificationPhotoUrl: String,
+    microVerificationSubmittedAt: Date,
+    // Metadata
+    workerName: String,
+    workerEmail: String,
+    disruptionType: String,
     createdAt: { type: Date, default: Date.now, index: true },
   },
   { timestamps: true }
@@ -157,6 +175,16 @@ const userSchema = new mongoose.Schema(
     },
     policyActive: { type: Boolean, default: false },
     
+    // Notifications
+    notifications: [{
+      type: { type: String },  // 'payout', 'disruption', 'claim', 'info'
+      title: String,
+      message: String,
+      amount: Number,
+      read: { type: Boolean, default: false },
+      createdAt: { type: Date, default: Date.now },
+    }],
+    
     createdAt: { type: Date, default: Date.now, index: true },
   },
   { timestamps: true }
@@ -205,6 +233,27 @@ const subscriptionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Liquidity Pool Schema - Tracks community pool balance
+const liquidityPoolSchema = new mongoose.Schema(
+  {
+    poolId: { type: String, default: 'main_pool', unique: true },
+    totalBalance: { type: Number, default: 0 },
+    totalContributions: { type: Number, default: 0 },
+    totalPayouts: { type: Number, default: 0 },
+    totalClaims: { type: Number, default: 0 },
+    totalWorkers: { type: Number, default: 0 },
+    lastUpdated: { type: Date, default: Date.now },
+    transactions: [{
+      type: { type: String, enum: ['contribution', 'payout'] },
+      amount: Number,
+      workerId: String,
+      claimId: String,
+      timestamp: { type: Date, default: Date.now },
+    }],
+  },
+  { timestamps: true }
+);
+
 // Export models
 module.exports = {
   User: mongoose.model('User', userSchema),
@@ -215,4 +264,5 @@ module.exports = {
   Disruption: mongoose.model('Disruption', disruptionSchema),
   Claim: mongoose.model('Claim', claimSchema),
   PremiumHistory: mongoose.model('PremiumHistory', premiumHistorySchema),
+  LiquidityPool: mongoose.model('LiquidityPool', liquidityPoolSchema),
 };
