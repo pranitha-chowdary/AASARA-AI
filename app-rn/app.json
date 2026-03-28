@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "Aasara",
+    "slug": "aasara-rn",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTabletMode": true,
+      "bundleIdentifier": "com.aasara.app"
+    },
+    "android": {
+      "package": "com.aasara.app"
+    }
+  }
+}
