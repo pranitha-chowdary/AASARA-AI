@@ -6,7 +6,14 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createHmac } = require('crypto');
 const Razorpay = require('razorpay');
+const twilio = require('twilio');
 require('dotenv').config();
+
+// Twilio SMS Client
+const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
+  ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+  : null;
+const TWILIO_FROM = process.env.TWILIO_PHONE_NUMBER || '';
 
 const { User, Telemetry, Worker, Disruption, Claim, PremiumHistory, Onboarding, Subscription, LiquidityPool } = require('./models/schemas');
 
@@ -1295,20 +1302,28 @@ app.get('/api/admin/workers', authenticateToken, async (req, res) => {
       .lean()
       .exec();
 
-    const workersWithDetails = workers.map(worker => ({
-      id: worker._id,
-      fullName: worker.fullName,
-      email: worker.email,
-      phoneNumber: worker.phoneNumber,
-      platform: worker.platform || 'Not linked',
-      registeredAt: worker.createdAt,
-      onboardingCompleted: worker.onboardingCompleted,
-      subscriptionStatus: worker.activeSubscription ? 'active' : 'inactive',
-      subscriptionAmount: worker.activeSubscription?.amount || null,
-      riskTier: worker.activeSubscription?.riskTier || null,
-      subscriptionEnd: worker.activeSubscription?.endDate || null,
-      policyActive: worker.policyActive,
-    }));
+    const workersWithDetails = workers.map(worker => {
+      const lastPing = worker.lastPingTime ? new Date(worker.lastPingTime) : null;
+      const pingAgeMs = lastPing ? (Date.now() - lastPing.getTime()) : null;
+      return {
+        id: worker._id,
+        fullName: worker.fullName,
+        email: worker.email,
+        phoneNumber: worker.phoneNumber,
+        platform: worker.platform || 'Not linked',
+        registeredAt: worker.createdAt,
+        onboardingCompleted: worker.onboardingCompleted,
+        subscriptionStatus: worker.activeSubscription ? 'active' : 'inactive',
+        subscriptionAmount: worker.activeSubscription?.amount || null,
+        riskTier: worker.activeSubscription?.riskTier || null,
+        subscriptionEnd: worker.activeSubscription?.endDate || null,
+        policyActive: worker.policyActive,
+        isWorking: worker.isWorking || false,
+        lastPingTime: worker.lastPingTime || null,
+        pingAgeMs,
+        pingStale: pingAgeMs ? pingAgeMs > 3 * 60 * 1000 : true,
+      };
+    });
 
     res.json({
       totalWorkers: workersWithDetails.length,
@@ -1331,22 +1346,19 @@ app.post('/api/shifts/toggle-status', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Store shift status in session/cache
-    const shiftStatus = {
-      userId,
-      isOnline,
-      toggledAt: new Date().toISOString(),
+    const updateData = {
+      policyActive: isOnline,
+      isWorking: isOnline,
+      lastOnlineToggle: new Date(),
     };
+    // Set lastPingTime when going online
+    if (isOnline) {
+      updateData.lastPingTime = new Date();
+    }
 
-    // For now, store in user document
-    await User.findByIdAndUpdate(
-      userId,
-      { 
-        policyActive: isOnline,
-        lastOnlineToggle: new Date(),
-      },
-      { new: true }
-    );
+    await User.findByIdAndUpdate(userId, updateData, { new: true });
+
+    console.log(`🔄 Worker ${user.fullName} toggled ${isOnline ? 'ONLINE 🟢' : 'OFFLINE 🔴'}`);
 
     res.json({
       message: isOnline ? 'You are now Online & Accepting Orders 🟢' : 'You are now Offline 🔴',
@@ -1359,13 +1371,32 @@ app.post('/api/shifts/toggle-status', authenticateToken, async (req, res) => {
   }
 });
 
-// Get Worker Current Status (online/offline)
+// Heartbeat — Worker pings every 3 minutes while Online
+app.post('/api/heartbeat', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    await User.findByIdAndUpdate(userId, { lastPingTime: new Date() });
+    res.json({ status: 'ok', pingTime: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ error: 'Heartbeat failed' });
+  }
+});
+
+// Get Worker Current Status (online/offline) — includes heartbeat info
 app.get('/api/shifts/current-status', authenticateToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('policyActive lastOnlineToggle');
+    const user = await User.findById(req.user.userId).select('policyActive isWorking lastPingTime lastOnlineToggle');
+    
+    const now = new Date();
+    const lastPing = user?.lastPingTime ? new Date(user.lastPingTime) : null;
+    const pingAgeMs = lastPing ? (now - lastPing) : null;
     
     res.json({
       isOnline: user?.policyActive || false,
+      isWorking: user?.isWorking || false,
+      lastPingTime: user?.lastPingTime || null,
+      pingAgeMs,
+      pingStale: pingAgeMs ? pingAgeMs > 3 * 60 * 1000 : true,
       lastToggled: user?.lastOnlineToggle || null,
     });
   } catch (err) {
@@ -1384,7 +1415,7 @@ app.get('/api/claims/my-claims', authenticateToken, async (req, res) => {
   }
 });
 
-// Admin: Trigger Disruption for a Worker
+// Admin: Trigger Disruption for a Worker (Flow A: Online / Flow B: Offline Edge Case)
 app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) => {
   try {
     const { workerId, disruptionType, severity } = req.body;
@@ -1398,10 +1429,21 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       return res.status(404).json({ error: 'Worker not found' });
     }
 
-    // Check if worker is online (eligible for claims)
-    if (!worker.policyActive) {
+    // Must have active policy (isWorking = true means they toggled online at some point)
+    if (!worker.isWorking && !worker.policyActive) {
       return res.status(400).json({ error: 'Worker is not online, cannot trigger disruption' });
     }
+
+    // Determine Flow A or Flow B based on heartbeat freshness
+    const now = new Date();
+    const lastPing = worker.lastPingTime ? new Date(worker.lastPingTime) : null;
+    const pingAgeMs = lastPing ? (now - lastPing) : Infinity;
+    const STALE_THRESHOLD = 3 * 60 * 1000; // 3 minutes
+    const isOnlineAndFresh = worker.isWorking && pingAgeMs < STALE_THRESHOLD;
+    const flowType = isOnlineAndFresh ? 'A' : 'B';
+
+    console.log(`\n⚡ DISRUPTION TRIGGER: ${disruptionType.toUpperCase()} for ${worker.fullName}`);
+    console.log(`   Flow ${flowType}: ${isOnlineAndFresh ? 'Online (fresh heartbeat)' : 'Offline/Stale (last ping ' + Math.round(pingAgeMs / 1000) + 's ago)'}`);
 
     const claimAmount = calculateClaimAmount(disruptionType, worker.activeSubscription?.amount);
     
@@ -1433,6 +1475,9 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
     const claimStatus = verdict === 'reject' ? 'rejected' : verdict === 'micro_verify' ? 'micro_verify' : 'paid';
     const payoutStatus = verdict === 'auto_approve' ? 'completed' : 'pending';
 
+    const crypto = require('crypto');
+    const txHash = claimStatus === 'paid' ? `0x${crypto.randomBytes(32).toString('hex')}` : null;
+
     // Create Claim
     const claim = new Claim({
       transactionId: `txn_${Date.now()}_${workerId.slice(-6)}`,
@@ -1444,41 +1489,107 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       fraudVerdict: verdict,
       autoTriggered: false,
       triggerSource: 'admin',
-      payoutMethod: 'simulated',
+      payoutMethod: flowType === 'A' ? 'upi' : 'upi_queued',
       payoutStatus,
       payoutTimestamp: claimStatus === 'paid' ? new Date() : undefined,
+      txHash,
       workerName: worker.fullName,
       workerEmail: worker.email,
       disruptionType,
     });
     await claim.save();
 
-    // Update active disruption on worker
+    // Build disruption event name for display
+    const eventNames = {
+      monsoon: '🌊 SEVERE MONSOON FLOOD',
+      heatwave: '🔥 EXTREME HEATWAVE ALERT',
+      curfew: '🚨 EMERGENCY CURFEW',
+      pollution: '💨 SEVERE AIR POLLUTION',
+      strike: '⛔ TRANSPORT STRIKE',
+    };
+    const eventLabel = eventNames[disruptionType] || disruptionType.toUpperCase();
+
+    // Update active disruption on worker (this is what the dashboard polls)
     const activeDisruption = {
       disruptionId,
       eventType: disruptionType,
+      eventLabel,
       severity: severity || 3,
       claimAmount,
       claimable: true,
       triggeredBy: 'admin',
       triggeredAt: new Date().toISOString(),
       status: claimStatus,
+      flow: flowType,
+      txHash,
     };
 
     await User.findByIdAndUpdate(workerId, { $set: { activeDisruption } });
 
-    // Send push notification
-    const notification = {
-      type: claimStatus === 'paid' ? 'payout' : 'claim',
-      title: claimStatus === 'paid' ? '💰 Payout Received!' : '🚨 Claim Verification',
-      message: claimStatus === 'paid' 
-        ? `₹${claimAmount} credited for ${disruptionType} disruption.` 
-        : `Your ₹${claimAmount} claim requires verification.`,
-      amount: claimAmount,
+    // ====== NOTIFICATIONS ======
+    const notifications = [];
+
+    // 1) Red Weather Warning notification
+    notifications.push({
+      type: 'weather_warning',
+      title: `🔴 ${eventLabel}`,
+      message: `Severe ${disruptionType} detected in your zone. Income disruption identified.`,
+      amount: 0,
       read: false,
       createdAt: new Date(),
-    };
-    await User.findByIdAndUpdate(workerId, { $push: { notifications: notification } });
+    });
+
+    // 2) Green UPI Receipt notification (if paid)
+    if (claimStatus === 'paid') {
+      notifications.push({
+        type: 'upi_receipt',
+        title: '💚 UPI PAYOUT RECEIPT',
+        message: `₹${claimAmount} has been credited to your UPI. Transaction ID: ${claim.transactionId}`,
+        amount: claimAmount,
+        read: false,
+        createdAt: new Date(Date.now() + 1000), // 1s after warning
+      });
+    }
+
+    await User.findByIdAndUpdate(workerId, { $push: { notifications: { $each: notifications } } });
+
+    // ====== FLOW B: TWILIO SMS (if offline/stale) ======
+    let smsSent = false;
+    let smsMessage = '';
+    if (flowType === 'B' && claimStatus === 'paid') {
+      smsMessage = `Aasara AI: ${eventLabel.replace(/[^\w\s₹]/g, '').trim()} detected in your zone. Rs.${claimAmount} payout queued to your UPI. Stay safe! - Team Aasara`;
+      
+      if (twilioClient && TWILIO_FROM && worker.phoneNumber) {
+        try {
+          const formattedPhone = worker.phoneNumber.startsWith('+') ? worker.phoneNumber : `+91${worker.phoneNumber}`;
+          await twilioClient.messages.create({
+            body: smsMessage,
+            from: TWILIO_FROM,
+            to: formattedPhone,
+          });
+          smsSent = true;
+          console.log(`📱 SMS sent to ${worker.fullName} (${formattedPhone})`);
+        } catch (smsErr) {
+          console.warn('📱 SMS failed:', smsErr.message);
+        }
+      } else {
+        console.log(`📱 [SIMULATED SMS] To: ${worker.phoneNumber} | ${smsMessage}`);
+      }
+
+      // Also push an SMS notification to the user's notification feed
+      await User.findByIdAndUpdate(workerId, {
+        $push: {
+          notifications: {
+            type: 'sms_sent',
+            title: '📱 SMS ALERT SENT',
+            message: `SMS sent to your phone: "${smsMessage}"`,
+            amount: claimAmount,
+            read: false,
+            createdAt: new Date(Date.now() + 2000),
+          },
+        },
+      });
+    }
 
     // Update Liquidity Pool if paid
     if (claimStatus === 'paid') {
@@ -1493,13 +1604,140 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       );
     }
 
+    console.log(`✅ Disruption processed: Flow ${flowType} | Status: ${claimStatus} | Amount: ₹${claimAmount}${flowType === 'B' ? ' | SMS: ' + (smsSent ? 'SENT' : 'SIMULATED') : ''}`);
+
     res.json({
-      message: `Disruption triggered for ${worker.fullName}. ${claimStatus === 'paid' ? 'Payout processed.' : 'Pending verification.'}`,
+      message: `Disruption triggered for ${worker.fullName}. ${claimStatus === 'paid' ? 'Payout processed.' : 'Pending verification.'} [Flow ${flowType}]`,
       disruption: activeDisruption,
+      flow: flowType,
+      flowDescription: flowType === 'A' 
+        ? 'Happy Path — Worker online with fresh heartbeat. Instant payout + real-time dashboard alert.'
+        : 'Offline Edge Case — Worker connection lost. Payout processed on Last Known State + SMS sent.',
+      smsSent: flowType === 'B' ? (smsSent ? 'Real SMS sent via Twilio' : 'Simulated (check console)') : 'N/A',
     });
   } catch (err) {
     console.error('Trigger disruption error:', err);
     res.status(500).json({ error: 'Failed to trigger disruption', details: err.message });
+  }
+});
+
+// Admin: Trigger Syndicate Attack (Demo Simulation)
+app.post('/api/admin/trigger-syndicate', authenticateToken, async (req, res) => {
+  try {
+    const { workerId, disruptionType = 'monsoon' } = req.body;
+    if (!workerId) return res.status(400).json({ error: 'Missing workerId' });
+
+    const worker = await User.findById(workerId);
+    if (!worker) return res.status(404).json({ error: 'Worker not found' });
+
+    console.log(`\n🚨 THE HEIST SIMULATION INITIATED: 500 spoofed nodes detected for ${disruptionType.toUpperCase()}`);
+    
+    // Layer 1 & 2 Defense Logic Evaluation (Mock)
+    const mockSensorData = { gpsState: 'moving', accelerometerState: 'flat_and_stationary' };
+    const mockNetworkData = { ipSubnet: '192.168.1.100', concurrentClaims: 500 };
+    
+    let isAnomaly = false;
+    if (mockSensorData.gpsState === 'moving' && mockSensorData.accelerometerState === 'flat_and_stationary') {
+      console.log('🛡️ LAYER 1 DEFENSE ACTIVATED: Kinematic spoofing detected.');
+      isAnomaly = true;
+    }
+    if (mockNetworkData.concurrentClaims > 10) {
+      console.log('🛡️ LAYER 2 DEFENSE ACTIVATED: Syndicate Bot Farm IPs detected.');
+      isAnomaly = true;
+    }
+
+    const claimAmount = calculateClaimAmount(disruptionType, worker.activeSubscription?.amount);
+    const disruptionId = `syndicate_${disruptionType}_${Date.now()}`;
+    
+    const disruptionRecord = new Disruption({
+      disruptionId, eventType: disruptionType, severity: 5, affectedWorkers: [workerId], status: 'active',
+    });
+    await disruptionRecord.save();
+
+    const claimStatus = isAnomaly ? 'Frozen_Anomaly' : 'paid';
+    const verdict = isAnomaly ? 'micro_verify' : 'auto_approve';
+
+    const crypto = require('crypto');
+    const txHash = claimStatus === 'paid' ? `0x${crypto.randomBytes(32).toString('hex')}` : null;
+
+    const challenges = [
+      'Hold up 3 fingers',
+      'Hold up 2 fingers',
+      'Give a thumbs up',
+      'Show a peace sign',
+      'Hold up 4 fingers'
+    ];
+    const livenessChallenge = isAnomaly ? challenges[Math.floor(Math.random() * challenges.length)] : null;
+
+    const claim = new Claim({
+      transactionId: `txn_heist_${Date.now()}_${workerId.slice(-6)}`,
+      workerId, disruptionId, amount: claimAmount,
+      status: claimStatus, fraudScore: 98, fraudVerdict: verdict,
+      autoTriggered: false, triggerSource: 'admin',
+      payoutMethod: 'upi', payoutStatus: claimStatus === 'paid' ? 'completed' : 'pending',
+      txHash,
+      workerName: worker.fullName, workerEmail: worker.email, disruptionType,
+    });
+    await claim.save();
+
+    const eventNames = { monsoon: '🌊 SEVERE MONSOON FLOOD' };
+    const eventLabel = eventNames[disruptionType] || eventNames.monsoon;
+    
+    const activeDisruption = {
+      disruptionId, eventType: disruptionType, eventLabel, severity: 5, claimAmount,
+      claimable: true, triggeredBy: 'admin', triggeredAt: new Date().toISOString(),
+      status: claimStatus, flow: 'syndicate_attack', txHash, livenessChallenge
+    };
+
+    await User.findByIdAndUpdate(workerId, { $set: { activeDisruption } });
+
+    res.json({
+      message: 'Syndicate attack intercepted!',
+      defenseAction: 'Auto-payout paused. Worker moved to Micro-Verification fallback.',
+      disruption: activeDisruption
+    });
+  } catch (err) {
+    console.error('Trigger syndicate error:', err);
+    res.status(500).json({ error: 'Failed to simulate syndicate attack' });
+  }
+});
+
+// Worker: Verify Fraud Anomaly with Photo
+app.post('/api/claims/verify-anomaly', authenticateToken, async (req, res) => {
+  try {
+    const workerId = req.user.userId;
+    const worker = await User.findById(workerId);
+    
+    if (!worker?.activeDisruption || worker.activeDisruption.status !== 'Frozen_Anomaly') {
+      return res.status(400).json({ error: 'No frozen anomaly found for this worker' });
+    }
+
+    if (req.body.mockResult === 'fail') {
+      console.log('🛡️ VISION AI: Liveness challenge mismatch found. Simulation REJECTED.');
+      return res.status(400).json({ 
+        error: `AI REJECTION: Gesture '${worker.activeDisruption.livenessChallenge}' could not be verified in the live feed.`,
+        action: 'retry_required'
+      });
+    }
+
+    // Process claim payout after successful vision AI
+    const disruptionId = worker.activeDisruption.disruptionId;
+    const crypto = require('crypto');
+    const txHash = `0x${crypto.randomBytes(32).toString('hex')}`;
+
+    await Claim.findOneAndUpdate(
+      { workerId, disruptionId, status: 'Frozen_Anomaly' },
+      { $set: { status: 'paid', payoutStatus: 'completed', payoutTimestamp: new Date(), txHash } }
+    );
+
+    // Update worker's active context and clear livenessChallenge
+    const updatedDisruption = { ...worker.activeDisruption, status: 'paid', txHash, livenessChallenge: null };
+    await User.findByIdAndUpdate(workerId, { $set: { activeDisruption: updatedDisruption } });
+
+    res.json({ message: 'Anomaly verified via Vision AI. Claim released!' });
+  } catch (err) {
+    console.error('Verify anomaly error:', err);
+    res.status(500).json({ error: 'Failed to verify anomaly' });
   }
 });
 

@@ -54,37 +54,37 @@ export function AdminLogin({ onLoginSuccess }: AdminLoginProps) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         className="w-full max-w-md"
       >
         {/* Admin Header */}
-        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-t-lg p-8 text-center text-white">
+        <div className="bg-gradient-to-r from-teal-600 to-teal-800 rounded-t-lg p-8 text-center text-white">
           <div className="flex justify-center mb-4">
             <Lock className="w-12 h-12" />
           </div>
           <h1 className="text-3xl font-bold mb-2">AASARA ADMIN</h1>
-          <p className="text-purple-100">Gig Worker Protection Platform</p>
+          <p className="text-teal-100">Gig Worker Protection Platform</p>
         </div>
 
         {/* Login Form */}
-        <div className="bg-slate-900 border border-slate-700 rounded-b-lg p-8 space-y-6">
+        <div className="bg-white border border-slate-200 shadow-sm rounded-b-lg p-8 space-y-6">
           <form onSubmit={handleLogin} className="space-y-4">
             {/* Email */}
             <div>
-              <label className="block text-slate-300 text-sm font-medium mb-2">
+              <label className="block text-slate-700 text-sm font-medium mb-2">
                 Admin Email
               </label>
               <div className="relative">
-                <Mail className="absolute left-3 top-3 w-5 h-5 text-slate-500" />
+                <Mail className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="admin@aasara.ai"
-                  className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  className="w-full pl-10 pr-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500"
                   required
                 />
               </div>
@@ -92,17 +92,17 @@ export function AdminLogin({ onLoginSuccess }: AdminLoginProps) {
 
             {/* Password */}
             <div>
-              <label className="block text-slate-300 text-sm font-medium mb-2">
+              <label className="block text-slate-700 text-sm font-medium mb-2">
                 Password
               </label>
               <div className="relative">
-                <Lock className="absolute left-3 top-3 w-5 h-5 text-slate-500" />
+                <Lock className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  className="w-full pl-10 pr-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500"
                   required
                 />
               </div>
@@ -113,16 +113,16 @@ export function AdminLogin({ onLoginSuccess }: AdminLoginProps) {
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="bg-red-900/30 border border-red-700 rounded-lg p-3 flex items-start gap-3"
+                className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-3"
               >
                 <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-                <p className="text-sm text-red-400">{error}</p>
+                <p className="text-sm text-red-600">{error}</p>
               </motion.div>
             )}
 
             {/* Demo Credentials Hint */}
-            <div className="bg-blue-900/20 border border-blue-700/50 rounded-lg p-3">
-              <p className="text-xs text-blue-300">
+            <div className="bg-teal-50 border border-teal-200 rounded-lg p-3">
+              <p className="text-xs text-teal-700">
                 <strong>Demo Credentials:</strong><br />
                 Email: admin@aasara.ai<br />
                 Password: admin123456
@@ -135,7 +135,7 @@ export function AdminLogin({ onLoginSuccess }: AdminLoginProps) {
               whileTap={{ scale: 0.98 }}
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 text-white font-bold rounded-lg transition-all flex items-center justify-center gap-2"
+              className="w-full py-3 bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-700 hover:to-teal-800 disabled:opacity-50 text-white font-bold rounded-lg transition-all flex items-center justify-center gap-2"
             >
               {loading ? (
                 <>

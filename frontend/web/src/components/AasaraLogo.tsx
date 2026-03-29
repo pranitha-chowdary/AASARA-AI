@@ -1,4 +1,3 @@
-import React from 'react';
 
 interface AasaraLogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
@@ -25,65 +24,73 @@ export function AasaraLogo({ size = 'md', className = '' }: AasaraLogoProps) {
       className={className}
     >
       <defs>
-        <linearGradient id="workerGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#4ECCA3" />
-          <stop offset="100%" stopColor="#1F4E5A" />
+        <linearGradient id="tealGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#38C7D2" />
+          <stop offset="100%" stopColor="#1E9CA4" />
         </linearGradient>
+        <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#254B85" />
+          <stop offset="100%" stopColor="#1A3668" />
+        </linearGradient>
+        
+        <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+          <feDropShadow dx="0" dy="2" stdDeviation="2" floodColor="#000" floodOpacity="0.2" />
+        </filter>
       </defs>
 
-      {/* Circular background */}
-      <circle cx="100" cy="100" r="95" fill="none" stroke="url(#workerGradient)" strokeWidth="2" opacity="0.3" />
-
-      {/* Delivery Worker on Bike */}
-      <g>
-        {/* Bike Frame - Left */}
-        <line x1="60" y1="90" x2="80" y2="130" stroke="url(#workerGradient)" strokeWidth="3" strokeLinecap="round" />
+      {/* --- INTERLOCKING TRIANGLE FRAME --- */}
+      <g filter="url(#shadow)">
+        {/* Left Segment (Dark Blue) */}
+        <polygon 
+          points="100,20 15,160 60,135 100,75" 
+          fill="url(#blueGrad)" 
+          stroke="#020617" 
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
         
-        {/* Bike Frame - Right */}
-        <line x1="120" y1="90" x2="100" y2="130" stroke="url(#workerGradient)" strokeWidth="3" strokeLinecap="round" />
+        {/* Bottom Segment (Dark Blue) */}
+        <polygon 
+          points="15,160 185,160 140,135 60,135" 
+          fill="url(#blueGrad)" 
+          stroke="#020617" 
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
         
-        {/* Bike Top Tube */}
-        <line x1="60" y1="90" x2="120" y2="90" stroke="url(#workerGradient)" strokeWidth="2" strokeLinecap="round" opacity="0.6" />
-
-        {/* Left Wheel */}
-        <circle cx="80" cy="130" r="20" fill="none" stroke="url(#workerGradient)" strokeWidth="2.5" />
-        <circle cx="80" cy="130" r="3" fill="url(#workerGradient)" />
-
-        {/* Right Wheel */}
-        <circle cx="100" cy="130" r="20" fill="none" stroke="url(#workerGradient)" strokeWidth="2.5" />
-        <circle cx="100" cy="130" r="3" fill="url(#workerGradient)" />
-
-        {/* Seat post */}
-        <line x1="90" y1="90" x2="85" y2="70" stroke="url(#workerGradient)" strokeWidth="2" strokeLinecap="round" />
-
-        {/* Worker Body */}
-        <circle cx="85" cy="55" r="12" fill="url(#workerGradient)" />
-
-        {/* Worker Torso */}
-        <rect x="79" y="70" width="12" height="25" rx="2" fill="url(#workerGradient)" opacity="0.9" />
-
-        {/* Left Arm */}
-        <line x1="79" y1="75" x2="60" y2="65" stroke="url(#workerGradient)" strokeWidth="3" strokeLinecap="round" />
-
-        {/* Right Arm holding delivery box */}
-        <line x1="91" y1="75" x2="110" y2="62" stroke="url(#workerGradient)" strokeWidth="3" strokeLinecap="round" />
-
-        {/* Delivery Package */}
-        <rect x="105" y="50" width="22" height="20" rx="2" fill="none" stroke="url(#workerGradient)" strokeWidth="2.5" />
-        
-        {/* Package handle */}
-        <path d="M 110 50 Q 116 42 122 50" fill="none" stroke="url(#workerGradient)" strokeWidth="1.5" strokeLinecap="round" opacity="0.7" />
-
-        {/* Left Leg */}
-        <line x1="82" y1="95" x2="75" y2="120" stroke="url(#workerGradient)" strokeWidth="3" strokeLinecap="round" />
-
-        {/* Right Leg */}
-        <line x1="88" y1="95" x2="95" y2="120" stroke="url(#workerGradient)" strokeWidth="3" strokeLinecap="round" />
+        {/* Right Segment (Teal) */}
+        <polygon 
+          points="100,20 185,160 140,135 100,75" 
+          fill="url(#tealGrad)" 
+          stroke="#020617" 
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
       </g>
 
-      {/* Motion lines - delivery speed */}
-      <line x1="40" y1="100" x2="50" y2="100" stroke="url(#workerGradient)" strokeWidth="1.5" strokeLinecap="round" opacity="0.4" />
-      <line x1="35" y1="110" x2="45" y2="110" stroke="url(#workerGradient)" strokeWidth="1.5" strokeLinecap="round" opacity="0.4" />
+      {/* --- GIG WORKER SILHOUETTE --- */}
+      <g transform="translate(-2, 5)">
+        {/* Head */}
+        <circle cx="104" cy="78" r="6.5" fill="url(#blueGrad)" />
+        
+        {/* Torso */}
+        <path d="M 98 88 L 108 88 L 105 112 L 98 112 Z" fill="url(#blueGrad)" />
+        
+        {/* Forward Leg (Right) */}
+        <polygon points="102,112 110,140 102,140 98,112" fill="url(#blueGrad)" />
+        
+        {/* Back Leg (Left) */}
+        <polygon points="98,112 92,140 85,138 94,112" fill="url(#blueGrad)" />
+        
+        {/* Backpack (Teal) */}
+        <path d="M 88 90 L 98 90 L 96 108 L 86 105 Z" fill="url(#tealGrad)" rx="2" />
+        
+        {/* Arm holding phone */}
+        <path d="M 104 90 L 114 102 L 120 98" fill="none" stroke="url(#blueGrad)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        
+        {/* Phone Device */}
+        <rect x="118" y="93" width="5" height="8" rx="1.5" fill="url(#tealGrad)" />
+      </g>
     </svg>
   );
 }

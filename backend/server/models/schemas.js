@@ -62,7 +62,7 @@ const disruptionSchema = new mongoose.Schema(
     disruptionId: { type: String, required: true, unique: true, index: true },
     eventType: {
       type: String,
-      enum: ['monsoon', 'heatwave', 'curfew', 'pollution', 'strike'],
+      enum: ['monsoon', 'heatwave', 'curfew', 'pollution', 'strike', 'heavy_rain', 'platform_outage'],
       required: true,
     },
     severity: { type: Number, min: 1, max: 5 },
@@ -91,7 +91,7 @@ const claimSchema = new mongoose.Schema(
     upiId: String,
     status: {
       type: String,
-      enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'micro_verify'],
+      enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'micro_verify', 'Frozen_Anomaly'],
       default: 'pending',
     },
     // Fraud Detection
@@ -99,10 +99,12 @@ const claimSchema = new mongoose.Schema(
     fraudVerdict: { type: String, enum: ['auto_approve', 'micro_verify', 'reject', 'admin_override'], default: 'auto_approve' },
     fraudDetails: { type: mongoose.Schema.Types.Mixed, default: {} },
     // Payout
-    payoutMethod: { type: String, enum: ['razorpay', 'upi', 'simulated'], default: 'simulated' },
+    payoutMethod: { type: String, enum: ['razorpay', 'upi', 'upi_queued', 'simulated'], default: 'simulated' },
     payoutId: String,
     payoutStatus: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], default: 'pending' },
     payoutTimestamp: Date,
+    // Web3 / Blockchain verification
+    txHash: { type: String, default: null },
     // Trigger
     autoTriggered: { type: Boolean, default: false },
     triggerSource: { type: String, enum: ['weather', 'heatwave', 'pollution', 'curfew', 'platform_outage', 'admin'], default: 'admin' },
@@ -146,6 +148,7 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true },
     fullName: { type: String, required: true },
     phoneNumber: { type: String, required: true, unique: true, index: true },
+    walletAddress: { type: String, default: '0x0000000000000000000000000000000000000000' },
     userType: { type: String, enum: ['worker', 'admin'], default: 'worker' },
     isActive: { type: Boolean, default: true },
     
@@ -174,6 +177,12 @@ const userSchema = new mongoose.Schema(
       verifiedAt: Date,
     },
     policyActive: { type: Boolean, default: false },
+    isWorking: { type: Boolean, default: false },
+    lastPingTime: { type: Date, default: null },
+    city: { type: String, default: '' },
+    
+    // Disruption State
+    activeDisruption: { type: mongoose.Schema.Types.Mixed, default: null },
     
     // Notifications
     notifications: [{

@@ -79,30 +79,30 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg p-6 text-white"
+        className="bg-gradient-to-r from-teal-600 to-teal-500 rounded-lg p-6 text-white shadow-sm"
       >
         <h2 className="text-2xl font-bold mb-2">Welcome, {user?.fullName}!</h2>
-        <p className="text-blue-100">
+        <p className="text-teal-50">
           Let's set up your protection plan. Start by linking your delivery platform.
         </p>
       </motion.div>
 
       {/* Step Progress */}
       <div className="flex items-center justify-between mb-8">
-        <div className="flex-1 bg-blue-600 h-2 rounded-full"></div>
-        <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold">
+        <div className="flex-1 bg-teal-600 h-2 rounded-full"></div>
+        <div className="w-8 h-8 bg-teal-600 text-white rounded-full flex items-center justify-center font-bold shadow-sm">
           1
         </div>
-        <div className="flex-1 bg-slate-300 h-2 rounded-full mx-2"></div>
-        <div className="w-8 h-8 bg-slate-300 text-slate-600 rounded-full flex items-center justify-center font-bold">
+        <div className="flex-1 bg-slate-200 h-2 rounded-full mx-2"></div>
+        <div className="w-8 h-8 bg-slate-200 text-slate-500 rounded-full flex items-center justify-center font-bold">
           2
         </div>
       </div>
 
       {/* Title */}
       <div>
-        <h3 className="text-xl font-bold text-slate-200 mb-2">Link Your Delivery Platform</h3>
-        <p className="text-slate-400">
+        <h3 className="text-xl font-bold text-slate-800 mb-2">Link Your Delivery Platform</h3>
+        <p className="text-slate-600">
           Connect your delivery account to enable real-time monitoring and automatic payouts.
         </p>
       </div>
@@ -120,12 +120,12 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
               onClick={() => setSelectedPlatform(platform.id)}
               className={`relative p-4 rounded-lg border-2 transition-all ${
                 isSelected
-                  ? `border-blue-500 bg-gradient-to-br ${platform.color}`
-                  : 'border-slate-700 bg-slate-800 hover:border-slate-600'
+                  ? `border-teal-500 bg-gradient-to-br ${platform.color} shadow-md`
+                  : 'border-slate-200 bg-white hover:border-slate-300 shadow-sm'
               }`}
             >
-              <Icon className={`w-8 h-8 mx-auto mb-2 ${isSelected ? 'text-white' : 'text-slate-400'}`} />
-              <p className={`text-sm font-medium ${isSelected ? 'text-white' : 'text-slate-400'}`}>
+              <Icon className={`w-8 h-8 mx-auto mb-2 ${isSelected ? 'text-white' : 'text-slate-500'}`} />
+              <p className={`text-sm font-medium ${isSelected ? 'text-white' : 'text-slate-600'}`}>
                 {platform.name}
               </p>
               {isSelected && (
@@ -134,7 +134,7 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
                   animate={{ scale: 1 }}
                   className="absolute top-2 right-2"
                 >
-                  <CheckCircle2 className="w-5 h-5 text-green-400" />
+                  <CheckCircle2 className="w-5 h-5 text-white drop-shadow-sm" />
                 </motion.div>
               )}
             </motion.button>
@@ -149,7 +149,7 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
           animate={{ opacity: 1, y: 0 }}
           className="space-y-3"
         >
-          <label className="block text-sm font-medium text-slate-300">
+          <label className="block text-sm font-medium text-slate-700">
             Platform Code/ID (Optional)
           </label>
           <input
@@ -157,7 +157,7 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
             value={platformCode}
             onChange={(e) => setPlatformCode(e.target.value)}
             placeholder={`Enter your ${selectedPlatform} partner ID`}
-            className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm"
           />
           <p className="text-xs text-slate-500">
             You can find this in your partner app settings or leave blank if unsure
@@ -170,7 +170,7 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="bg-red-500/10 border border-red-500/50 text-red-400 p-3 rounded-lg text-sm"
+          className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-lg text-sm"
         >
           {error}
         </motion.div>
@@ -181,7 +181,7 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="bg-green-500/10 border border-green-500/50 text-green-400 p-4 rounded-lg flex items-center gap-3"
+          className="bg-green-50 border border-green-200 text-green-700 p-4 rounded-lg flex items-center gap-3"
         >
           <CheckCircle2 className="w-5 h-5" />
           <div>
@@ -197,10 +197,10 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
         whileTap={{ scale: 0.98 }}
         onClick={handleLinkPlatform}
         disabled={!selectedPlatform || loading || success}
-        className={`w-full py-3 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${
+        className={`w-full py-3 rounded-lg font-medium transition-all flex items-center justify-center gap-2 shadow-sm ${
           !selectedPlatform || loading || success
-            ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
-            : 'bg-blue-600 hover:bg-blue-700 text-white'
+            ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+            : 'bg-teal-600 hover:bg-teal-700 text-white'
         }`}
       >
         {loading ? (
@@ -219,9 +219,9 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
       </motion.button>
 
       {/* Info Box */}
-      <div className="bg-slate-800 border border-slate-700 rounded-lg p-4 space-y-2">
-        <p className="text-sm font-medium text-slate-300">Why link your platform?</p>
-        <ul className="text-sm text-slate-400 space-y-1">
+      <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-2">
+        <p className="text-sm font-medium text-slate-700">Why link your platform?</p>
+        <ul className="text-sm text-slate-600 space-y-1">
           <li>✓ Real-time delivery status tracking</li>
           <li>✓ Automatic claim triggering for disruptions</li>
           <li>✓ Verify your earnings and disruption impact</li>

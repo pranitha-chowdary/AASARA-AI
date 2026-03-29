@@ -54,7 +54,7 @@ export function AuthView() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -62,35 +62,35 @@ export function AuthView() {
       >
         <div className="text-center mb-8">
           <div className="flex justify-center mb-4">
-            <AasaraLogo size="lg" animated={true} />
+            <AasaraLogo size="lg" />
           </div>
-          <h1 className="text-3xl font-bold text-blue-500 mb-2">Aasara AI</h1>
-          <p className="text-slate-400">Parametric Safety Net for Gig Workers</p>
+          <h1 className="text-3xl font-bold text-teal-600 mb-2">Aasara AI</h1>
+          <p className="text-slate-500">Parametric Safety Net for Gig Workers</p>
         </div>
 
-        <div className="bg-slate-900 rounded-lg border border-slate-800 overflow-hidden">
-          <div className="flex border-b border-slate-800">
+        <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+          <div className="flex border-b border-slate-200 bg-slate-50/50">
             <button
               onClick={() => setActiveTab('worker')}
               className={`flex-1 py-4 px-6 flex items-center justify-center gap-2 transition-all ${
                 activeTab === 'worker'
-                  ? 'bg-slate-800 text-blue-500 border-b-2 border-blue-500'
-                  : 'text-slate-400 hover:text-slate-300'
+                  ? 'bg-white text-teal-600 border-b-2 border-teal-500 font-bold'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100/50'
               }`}
             >
               <Bike className="w-5 h-5" />
-              <span className="font-medium">Gig Worker</span>
+              <span>Gig Worker</span>
             </button>
             <button
               onClick={() => setActiveTab('admin')}
               className={`flex-1 py-4 px-6 flex items-center justify-center gap-2 transition-all ${
                 activeTab === 'admin'
-                  ? 'bg-slate-800 text-blue-500 border-b-2 border-blue-500'
-                  : 'text-slate-400 hover:text-slate-300'
+                  ? 'bg-white text-teal-600 border-b-2 border-teal-500 font-bold'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100/50'
               }`}
             >
               <Shield className="w-5 h-5" />
-              <span className="font-medium">Admin</span>
+              <span>Admin</span>
             </button>
           </div>
 
@@ -98,50 +98,50 @@ export function AuthView() {
             {activeTab === 'admin' ? (
               <form onSubmit={handleAdminLogin} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
                     Email Address
                   </label>
                   <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                     <input
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full pl-10 pr-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-shadow"
                       placeholder="admin@aasara.ai"
                       required
                     />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
                     Password
                   </label>
                   <input
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-shadow"
                     placeholder="Enter your password"
                     required
                   />
                 </div>
                 {error && (
-                  <div className="text-red-400 text-sm bg-red-950/30 border border-red-900 rounded-lg p-3">
+                  <div className="text-red-700 text-sm bg-red-50 border border-red-200 rounded-lg p-3">
                     {error}
                   </div>
                 )}
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors"
+                  className="w-full py-3 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors shadow-sm"
                 >
                   {loading ? 'Signing in...' : 'Sign In'}
                 </button>
               </form>
             ) : (
               <div className="space-y-4">
-                <div className="flex gap-2 mb-6">
+                <div className="flex gap-2 mb-6 p-1 bg-slate-100 rounded-xl">
                   <button
                     onClick={() => {
                       setWorkerMode('signup');
@@ -150,8 +150,8 @@ export function AuthView() {
                     }}
                     className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
                       workerMode === 'signup'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:text-slate-300'
+                        ? 'bg-white text-teal-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
                     Sign Up
@@ -164,8 +164,8 @@ export function AuthView() {
                     }}
                     className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
                       workerMode === 'login'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:text-slate-300'
+                        ? 'bg-white text-teal-700 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
                     }`}
                   >
                     Login
@@ -175,16 +175,16 @@ export function AuthView() {
                 <form onSubmit={handleWorkerAuth} className="space-y-4">
                   {workerMode === 'signup' && (
                     <div>
-                      <label className="block text-sm font-medium text-slate-300 mb-2">
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
                         Full Name
                       </label>
                       <div className="relative">
-                        <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                        <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                         <input
                           type="text"
                           value={fullName}
                           onChange={(e) => setFullName(e.target.value)}
-                          className="w-full pl-10 pr-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-shadow"
                           placeholder="Enter your full name"
                           required
                         />
@@ -193,16 +193,16 @@ export function AuthView() {
                   )}
 
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">
+                    <label className="block text-sm font-medium text-slate-700 mb-2">
                       Email Address
                     </label>
                     <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                       <input
                         type="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        className="w-full pl-10 pr-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-shadow"
                         placeholder="you@example.com"
                         required
                       />
@@ -211,16 +211,16 @@ export function AuthView() {
 
                   {workerMode === 'signup' && (
                     <div>
-                      <label className="block text-sm font-medium text-slate-300 mb-2">
+                      <label className="block text-sm font-medium text-slate-700 mb-2">
                         Phone Number
                       </label>
                       <div className="relative">
-                        <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                        <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                         <input
                           type="tel"
                           value={phoneNumber}
                           onChange={(e) => setPhoneNumber(e.target.value)}
-                          className="w-full pl-10 pr-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-shadow"
                           placeholder="+91 9876543210"
                           required
                         />
@@ -229,27 +229,27 @@ export function AuthView() {
                   )}
 
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">
+                    <label className="block text-sm font-medium text-slate-700 mb-2">
                       Password
                     </label>
                     <div className="relative">
-                      <Shield className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                      <Shield className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
                       <input
                         type="password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="w-full pl-10 pr-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full pl-10 pr-4 py-3 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-shadow"
                         placeholder={workerMode === 'signup' ? 'Min. 8 characters' : '••••••••'}
                         required
                       />
                     </div>
                     {workerMode === 'signup' && (
-                      <p className="text-slate-400 text-xs mt-1">Password must be at least 8 characters</p>
+                      <p className="text-slate-500 text-xs mt-1">Password must be at least 8 characters</p>
                     )}
                   </div>
 
                   {error && (
-                    <div className="text-red-400 text-sm bg-red-950/30 border border-red-900 rounded-lg p-3">
+                    <div className="text-red-700 text-sm bg-red-50 border border-red-200 rounded-lg p-3">
                       {error}
                     </div>
                   )}
@@ -257,7 +257,7 @@ export function AuthView() {
                   <button
                     type="submit"
                     disabled={loading}
-                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors"
+                    className="w-full py-3 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors shadow-sm"
                   >
                     {loading
                       ? 'Processing...'
