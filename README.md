@@ -52,8 +52,8 @@ To demonstrate the economic necessity and viability of our platform, here is the
     <td align="center"><b>System Architecture</b></td>
   </tr>
   <tr>
-    <td width="30%"><img src="workflow.png" alt="User Flow"></td>
-    <td width="30%"><img src="Architecture.png" alt="System Architecture"></td>
+    <td width="30%"><img src="/docs/workflow.png" alt="User Flow"></td>
+    <td width="30%"><img src="/docs/Architecture.png" alt="System Architecture"></td>
   </tr>
 </table>
 
