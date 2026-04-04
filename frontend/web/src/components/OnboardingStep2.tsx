@@ -88,7 +88,7 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
       await delay(500);
       setAnalysisStep('🧠 ML Model calculating both plan quotes...');
 
-      const response = await fetch('http://localhost:5001/api/onboarding/premium-quote', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/onboarding/premium-quote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ startDate: start, endDate: end, lat, lng }),
@@ -121,7 +121,7 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
     setError(null);
     try {
       const token = localStorage.getItem('authToken');
-      const orderResponse = await fetch('http://localhost:5001/api/onboarding/create-order', {
+      const orderResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/onboarding/create-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -136,7 +136,7 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
         key: orderData.key, amount: orderData.amount, currency: 'INR', order_id: orderData.orderId,
         handler: async (response: any) => {
           try {
-            const verifyResponse = await fetch('http://localhost:5001/api/onboarding/verify-payment', {
+            const verifyResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/onboarding/verify-payment`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
               body: JSON.stringify({

@@ -11,6 +11,18 @@ dist
 dist-ssr
 *.local
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Hardhat / Blockchain build outputs
+blockchain/artifacts/
+blockchain/cache/
+blockchain/node_modules/
+
 .vscode/*
 !.vscode/extensions.json
 .idea

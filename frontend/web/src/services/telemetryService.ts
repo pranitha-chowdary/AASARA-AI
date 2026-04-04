@@ -3,7 +3,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 // Telemetry Service Hook for Real-Time Data Collection
 // Integrated with AASARA Core Processing Gateway (http://localhost:5001)
 
-const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5001';
+const GATEWAY_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5001';
 
 interface GPSData {
   lat: number;

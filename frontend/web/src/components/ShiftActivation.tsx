@@ -20,7 +20,7 @@ export function ShiftActivation({ onShiftActive }: ShiftActivationProps) {
 
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch('http://localhost:5001/api/shifts/activate', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/shifts/activate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

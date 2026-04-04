@@ -1,5 +1,5 @@
 """
-AASARA ML Engine — Flask API Server (Two-Tier Plans)
+AASARA ML Engine  Flask API Server (Two-Tier Plans)
 Serves dynamic premium pricing via ML model with weather,
 traffic, and disruption risk analysis.
 
@@ -21,15 +21,22 @@ from disruption_predictor import predict_weekly_disruptions
 from premium_model import get_model
 from fraud_engine import get_fraud_engine
 from platform_simulator import get_platform_status, get_worker_earnings_history, get_active_orders_in_zone
+from vision_service import analyze_disruption_photo
+from news_service import scan_social_triggers
 
 app = Flask(__name__)
 CORS(app)
 
 # Pre-train the ML models on startup
-print("\n AASARA ML ENGINE — Initializing (Two-Tier Plans + Fraud Engine)...")
+print("\n AASARA ML ENGINE  Initializing (Two-Tier Plans + Fraud Engine)...")
 model = get_model()
 fraud_engine = get_fraud_engine()
 print("Dual ML Models + 3-Layer Fraud Engine loaded\n")
+
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'ok'})
 
 
 @app.route('/', methods=['GET'])
@@ -44,6 +51,10 @@ def health():
             'POST /api/ml/risk-analysis',
             'POST /api/ml/zone-safety',
             'POST /api/ml/weather-forecast',
+            'POST /api/ml/fraud-check',
+            'POST /api/ml/verify-photo',
+            'POST /api/ml/trigger-scan',
+            'POST /api/ml/platform-telemetry',
         ]
     })
 
@@ -121,8 +132,8 @@ def calculate_premium():
         basic = both_plans['basic']
         premium = both_plans['premium']
 
-        print(f" Basic Shield: ₹{basic['daily_premium']}/day = ₹{basic['weekly_premium']}/week")
-        print(f"⚡ Total Guard: ₹{premium['daily_premium']}/day = ₹{premium['weekly_premium']}/week")
+        print(f" Basic Shield: {basic['daily_premium']}/day = {basic['weekly_premium']}/week")
+        print(f" Total Guard: {premium['daily_premium']}/day = {premium['weekly_premium']}/week")
 
         response = {
             'plans': both_plans,
@@ -256,7 +267,7 @@ def platform_telemetry():
 @app.route('/api/ml/trigger-scan', methods=['POST'])
 def trigger_scan():
     """
-    Automated Trigger Scan — Check all 5 disruption triggers.
+    Automated Trigger Scan  Check all 5 disruption triggers.
     Returns which triggers are active and affected zones.
     """
     try:
@@ -266,7 +277,7 @@ def trigger_scan():
 
         triggers = []
 
-        # Trigger 1: Heavy Rain / Flood (OpenWeatherMap — REAL)
+        # Trigger 1: Heavy Rain / Flood (OpenWeatherMap  REAL)
         try:
             current = get_current_weather(lat, lng)
             forecast = get_5day_forecast(lat, lng)
@@ -278,7 +289,7 @@ def trigger_scan():
             is_rain_trigger = rain_3h > 20 or 'rain' in weather_desc.lower() or 'storm' in weather_desc.lower()
             triggers.append({
                 'id': 'heavy_rain',
-                'name': '🌧️ Heavy Rain / Flood',
+                'name': ' Heavy Rain / Flood',
                 'source': 'OpenWeatherMap (Real-time)',
                 'active': is_rain_trigger,
                 'severity': min(5, int(rain_3h / 10) + 1) if is_rain_trigger else 0,
@@ -290,9 +301,9 @@ def trigger_scan():
                 },
             })
         except Exception as e:
-            triggers.append({'id': 'heavy_rain', 'name': '🌧️ Heavy Rain', 'active': False, 'error': str(e)})
+            triggers.append({'id': 'heavy_rain', 'name': ' Heavy Rain', 'active': False, 'error': str(e)})
 
-        # Trigger 2: Heatwave (OpenWeatherMap — REAL)
+        # Trigger 2: Heatwave (OpenWeatherMap  REAL)
         try:
             temp = current.get('temperature', 30)
             is_heat_trigger = temp > 42
@@ -310,7 +321,7 @@ def trigger_scan():
         # Trigger 3: Severe Pollution (Simulated AQI)
         import random, hashlib
         random.seed(int(hashlib.md5(f"{lat}{lng}{datetime.now().hour}".encode()).hexdigest()[:8], 16))
-        aqi = random.randint(50, 180)  # Simulate — occasionally dangerous
+        aqi = random.randint(50, 180)  # Simulate  occasionally dangerous
         if datetime.now().month in [10, 11, 12, 1]:  # Winter = worse AQI
             aqi += random.randint(50, 150)
         is_pollution_trigger = aqi > 300
@@ -323,37 +334,76 @@ def trigger_scan():
             'data': {'aqi': aqi, 'level': 'Hazardous' if aqi > 300 else 'Unhealthy' if aqi > 150 else 'Moderate'},
         })
 
-        # Trigger 4: Curfew / Bandh (Simulated Gov API)
-        is_curfew = random.random() < 0.05  # 5% chance
-        triggers.append({
-            'id': 'curfew',
-            'name': ' Curfew / Bandh',
-            'source': 'Government API (Simulated)',
-            'active': is_curfew,
-            'severity': 4 if is_curfew else 0,
-            'data': {'reason': 'Section 144 imposed' if is_curfew else 'No active curfew'},
-        })
+        # Trigger 4: Curfew / Bandh  NewsData.io (REAL)
+        try:
+            city_name = zone.get('detected_city', 'Mumbai') if 'zone' in dir() else 'Mumbai'
+            news = scan_social_triggers(city_name)
 
-        # Trigger 5: Platform Outage (Simulated)
-        is_outage = random.random() < 0.03  # 3% chance
-        triggers.append({
-            'id': 'platform_outage',
-            'name': 'Platform Outage',
-            'source': 'Platform Health Monitor (Simulated)',
-            'active': is_outage,
-            'severity': 3 if is_outage else 0,
-            'data': {
-                'platforms_affected': random.sample(['Zomato', 'Swiggy', 'Dunzo'], random.randint(1, 2)) if is_outage else [],
-                'estimated_recovery': '2-4 hours' if is_outage else 'N/A',
-            },
-        })
+            curfew_data  = news.get('curfew', {})
+            strike_data  = news.get('strike', {})
+            flood_alert  = news.get('flood_alert', {})
+
+            is_curfew = curfew_data.get('active', False)
+            triggers.append({
+                'id': 'curfew',
+                'name': ' Curfew / Bandh',
+                'source': curfew_data.get('source', 'NewsData.io'),
+                'active': is_curfew,
+                'severity': 4 if is_curfew else 0,
+                'data': {
+                    'reason':     'Section 144 / Emergency Curfew' if is_curfew else 'No active curfew',
+                    'confidence': curfew_data.get('confidence', 0),
+                    'articles':   curfew_data.get('articles', []),
+                },
+            })
+
+            is_strike = strike_data.get('active', False)
+            triggers.append({
+                'id': 'transport_strike',
+                'name': ' Transport Strike / Bandh',
+                'source': strike_data.get('source', 'NewsData.io'),
+                'active': is_strike,
+                'severity': 3 if is_strike else 0,
+                'data': {
+                    'reason':     'Active transport strike / bharat bandh' if is_strike else 'No active strike',
+                    'confidence': strike_data.get('confidence', 0),
+                    'articles':   strike_data.get('articles', []),
+                },
+            })
+
+            # Supplement Trigger 1 (heavy rain) with government flood alert
+            if flood_alert.get('active') and not is_rain_trigger:
+                # Upgrade the rain trigger if gov alert fired even without live rain data
+                triggers[-3 if len(triggers) >= 3 else 0]['data']['gov_flood_alert'] = flood_alert
+
+        except Exception as news_err:
+            print(f'[Trigger Scan] NewsData error: {news_err}')
+            # Fallback to simulation if news fetch fails
+            is_curfew = random.random() < 0.05
+            triggers.append({
+                'id': 'curfew',
+                'name': ' Curfew / Bandh',
+                'source': 'Government API (Fallback  NewsData unavailable)',
+                'active': is_curfew,
+                'severity': 4 if is_curfew else 0,
+                'data': {'reason': 'Section 144 imposed' if is_curfew else 'No active curfew'},
+            })
+            is_strike = random.random() < 0.04
+            triggers.append({
+                'id': 'transport_strike',
+                'name': ' Transport Strike / Bandh',
+                'source': 'NewsData fallback (Simulated)',
+                'active': is_strike,
+                'severity': 3 if is_strike else 0,
+                'data': {'reason': 'Active strike' if is_strike else 'No active strike'},
+            })
 
         active_triggers = [t for t in triggers if t.get('active')]
         zone = get_zone_safety_score(lat, lng)
 
         print(f"\n Trigger Scan: {len(active_triggers)}/{len(triggers)} active")
         for t in active_triggers:
-            print(f"  ⚡ {t['name']} (severity: {t.get('severity', 0)})")
+            print(f"   {t['name']} (severity: {t.get('severity', 0)})")
 
         return jsonify({
             'scan_time': datetime.now().isoformat(),
@@ -371,11 +421,45 @@ def trigger_scan():
         return jsonify({'error': str(e)}), 500
 
 
+# ==============================================================================
+# VISION AI ENDPOINT
+# ==============================================================================
+
+@app.route('/api/ml/verify-photo', methods=['POST'])
+def verify_photo():
+    """
+    Analyze a worker-submitted photo to confirm a disruption event.
+
+    Input:
+      { image: <base64 string>  }   required
+
+    Output:
+      { verified, confidence, disruption_score, analysis, model_used, top_predictions }
+    """
+    try:
+        data = request.json or {}
+        image_data = data.get('image')
+
+        if not image_data:
+            return jsonify({'error': 'No image data provided. Send { image: "<base64>" }'}), 400
+
+        print(f'\n[VisionAI] Analyzing photo for disruption verification...')
+        result = analyze_disruption_photo(image_data)
+        print(f'[VisionAI] Score: {result["disruption_score"]}/100  Verified: {result["verified"]}')
+        return jsonify(result)
+
+    except Exception as exc:
+        print(f'[VisionAI] Error: {exc}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(exc)}), 500
+
+
 if __name__ == '__main__':
-    port = int(os.getenv('ML_ENGINE_PORT', 5002))
+    port = int(os.getenv('PORT', os.getenv('ML_ENGINE_PORT', 5002)))
     print(f"\n AASARA ML Engine starting on port {port}")
     print(f" OpenWeatherMap API: {'Configured' if os.getenv('OPENWEATHERMAP_API_KEY') else 'Using default key'}")
     print(f" Model: Dual GBDT v2.0 + Fraud Engine v1.0")
-    print(f" Plans: Basic Shield (₹3-5/day) | Total Guard (₹6-9/day)")
+    print(f" Plans: Basic Shield (3-5/day) | Total Guard (6-9/day)")
     print(f" Fraud: 3-Layer Zero-Trust Verification\n")
     app.run(host='0.0.0.0', port=port, debug=False)

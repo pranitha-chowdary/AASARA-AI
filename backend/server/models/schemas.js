@@ -91,7 +91,7 @@ const claimSchema = new mongoose.Schema(
     upiId: String,
     status: {
       type: String,
-      enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'micro_verify', 'Frozen_Anomaly'],
+      enum: ['pending', 'validated', 'approved', 'paid', 'rejected', 'micro_verify', 'Frozen_Anomaly', 'Payment_Failed_Retrying'],
       default: 'pending',
     },
     // Fraud Detection
@@ -144,14 +144,31 @@ const premiumHistorySchema = new mongoose.Schema(
 // User Schema - Stores authentication & user profile
 const userSchema = new mongoose.Schema(
   {
-    email: { type: String, required: true, unique: true, lowercase: true, index: true },
+    email: { 
+      type: String, 
+      required: [true, 'Email is required'], 
+      unique: true, 
+      lowercase: true, 
+      index: true,
+      match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Please fill a valid email address']
+    },
     password: { type: String, required: true },
     fullName: { type: String, required: true },
-    phoneNumber: { type: String, required: true, unique: true, index: true },
+    phoneNumber: { 
+      type: String, 
+      required: [true, 'Phone number is required'], 
+      unique: true, 
+      index: true,
+      match: [/^[6-9]\d{9}$/, 'Please fill a valid 10-digit mobile number']
+    },
     walletAddress: { type: String, default: '0x0000000000000000000000000000000000000000' },
     userType: { type: String, enum: ['worker', 'admin'], default: 'worker' },
     isActive: { type: Boolean, default: true },
     
+    // Authentication recovery
+    resetPasswordToken: { type: String, default: null },
+    resetPasswordExpires: { type: Date, default: null },
+
     // Onboarding fields
     onboardingStep: { type: Number, default: 1 }, // 1: Platform linking, 2: Payment, 3: Complete
     onboardingCompleted: { type: Boolean, default: false },

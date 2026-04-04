@@ -29,7 +29,7 @@ export function Dashboard() {
       const token = localStorage.getItem('authToken');
       
       // Try to fetch subscription from database
-      const subResponse = await fetch('http://localhost:5001/api/subscription/get-active', {
+      const subResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/subscription/get-active`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -70,19 +70,19 @@ export function Dashboard() {
   // Admin Dashboard - Show this if user is admin
   if (userType === 'admin' && !loading) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
+      <div className="min-h-screen bg-transparent">
+        <header className="bg-white/85 backdrop-blur-md border-b border-orange-100/60 sticky top-0 z-50 shadow-sm shadow-orange-100/30">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
             <div className="flex items-center gap-3">
               <AasaraLogo size="md" />
               <div>
-                <div className="text-teal-600 font-semibold">AASARA ADMIN CONTROL</div>
-                <div className="text-xs text-slate-500">Gig Worker Protection Management</div>
+                <div className="text-teal-700 font-semibold">AASARA ADMIN CONTROL</div>
+                <div className="text-xs text-amber-700/70">Gig Worker Protection Management</div>
               </div>
             </div>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm"
+              className="flex items-center gap-2 px-4 py-2 bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded-lg transition-colors text-sm font-medium"
             >
               <LogOut className="w-4 h-4" />
               Logout
@@ -99,8 +99,8 @@ export function Dashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-teal-600">Loading...</div>
+      <div className="min-h-screen bg-transparent flex items-center justify-center">
+        <div className="text-orange-600 font-semibold animate-pulse">Loading...</div>
       </div>
     );
   }
@@ -108,19 +108,19 @@ export function Dashboard() {
   // Step 1: Platform Linking
   if (currentStep === 1) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <header className="bg-white border-b border-slate-200 sticky top-0">
+      <div className="min-h-screen bg-transparent">
+        <header className="bg-white/85 backdrop-blur-md border-b border-orange-100/60 sticky top-0 shadow-sm shadow-orange-100/30">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
             <div className="flex items-center gap-3">
               <AasaraLogo size="md" />
               <div>
-                <div className="text-teal-600 font-semibold">Platform Linking</div>
-                <div className="text-xs text-slate-500">Step 1 of 3</div>
+                <div className="text-teal-700 font-semibold">Platform Linking</div>
+                <div className="text-xs text-amber-700/70">Step 1 of 3</div>
               </div>
             </div>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm"
+              className="flex items-center gap-2 px-4 py-2 bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded-lg transition-colors text-sm font-medium"
             >
               <LogOut className="w-4 h-4" />
               Logout
@@ -140,19 +140,19 @@ export function Dashboard() {
   // Step 2: Plan Selection & Payment
   if (currentStep === 2) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <header className="bg-white border-b border-slate-200 sticky top-0">
+      <div className="min-h-screen bg-transparent">
+        <header className="bg-white/85 backdrop-blur-md border-b border-orange-100/60 sticky top-0 shadow-sm shadow-orange-100/30">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
             <div className="flex items-center gap-3">
               <AasaraLogo size="md" />
               <div>
-                <div className="text-teal-600 font-semibold">Weekly Plan & Payment</div>
-                <div className="text-xs text-slate-500">Step 2 of 3</div>
+                <div className="text-teal-700 font-semibold">Weekly Plan & Payment</div>
+                <div className="text-xs text-amber-700/70">Step 2 of 3</div>
               </div>
             </div>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm"
+              className="flex items-center gap-2 px-4 py-2 bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded-lg transition-colors text-sm font-medium"
             >
               <LogOut className="w-4 h-4" />
               Logout
@@ -173,19 +173,19 @@ export function Dashboard() {
   // Step 3: Active Dashboard
   if (currentStep === 3) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
+      <div className="min-h-screen bg-transparent">
+        <header className="bg-white/85 backdrop-blur-md border-b border-orange-100/60 sticky top-0 z-50 shadow-sm shadow-orange-100/30">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
             <div className="flex items-center gap-3">
               <AasaraLogo size="md" />
               <div>
-                <div className="text-teal-600 font-semibold">Welcome, {user?.fullName}</div>
-                <div className="text-xs text-slate-500">Your protection plan is active</div>
+                <div className="text-teal-700 font-semibold">Welcome, {user?.fullName}</div>
+                <div className="text-xs text-amber-700/70">Your protection plan is active</div>
               </div>
             </div>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm"
+              className="flex items-center gap-2 px-4 py-2 bg-orange-50 hover:bg-orange-100 text-orange-700 border border-orange-200 rounded-lg transition-colors text-sm font-medium"
             >
               <LogOut className="w-4 h-4" />
               Logout

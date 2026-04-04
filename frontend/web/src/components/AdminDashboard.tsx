@@ -4,10 +4,10 @@ import {
   Users, AlertTriangle, CheckCircle2, Zap, Shield,
   RefreshCw, DollarSign, BarChart3, Target,
   XCircle, Loader2, Cpu, FileWarning,
-  Truck, ShieldAlert, BadgeCheck, Wifi,
+  Truck, ShieldAlert, BadgeCheck, Wifi, TrendingDown,
 } from 'lucide-react';
 
-const API = 'http://localhost:5001';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 const TABS = [
   { id: 'command', label: '🎯 Command Center', icon: Target },
   { id: 'workers', label: '👥 Workers', icon: Users },
@@ -29,6 +29,8 @@ export function AdminDashboard() {
   const [selectedWorker, setSelectedWorker] = useState<any>(null);
   const [platformData, setPlatformData] = useState<any>(null);
   const [disruptionType, setDisruptionType] = useState('');
+  const [blackSwanResult, setBlackSwanResult] = useState<any>(null);
+  const [suspendEnrollments, setSuspendEnrollments] = useState(false);
   const token = localStorage.getItem('adminToken');
 
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
@@ -69,7 +71,27 @@ export function AdminDashboard() {
     setL('analytics', false);
   }, []);
 
-  useEffect(() => { fetchWorkers(); fetchClaims(); fetchAnalytics(); }, []);
+  // Fetch enrollment suspension status from backend
+  const fetchEnrollmentStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/admin/enrollment-status`, { headers });
+      const data = await res.json();
+      setSuspendEnrollments(data.suspended);
+    } catch { /* ignore */ }
+  }, []);
+
+  const toggleEnrollmentSuspension = async (suspend: boolean) => {
+    try {
+      const res = await fetch(`${API}/api/admin/enrollment-status`, {
+        method: 'POST', headers, body: JSON.stringify({ suspended: suspend }),
+      });
+      const data = await res.json();
+      setSuspendEnrollments(data.suspended);
+      setSuccess(suspend ? '⛔ New enrollments suspended' : '✅ Enrollments re-opened');
+    } catch { setError('Failed to update enrollment status'); }
+  };
+
+  useEffect(() => { fetchWorkers(); fetchClaims(); fetchAnalytics(); fetchEnrollmentStatus(); }, []);
   useEffect(() => {
     if (activeTab === 'workers') fetchWorkers();
     if (activeTab === 'claims') fetchClaims();
@@ -155,6 +177,22 @@ export function AdminDashboard() {
     setL('syndicate', false);
   };
 
+  // ========== SIMULATE 14-DAY BLACK SWAN ==========
+  const simulateBlackSwan = async () => {
+    setL('blackSwan', true); setError(null); setBlackSwanResult(null);
+    try {
+      const res = await fetch(`${API}/api/admin/black-swan-simulation`, {
+        method: 'POST', headers,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Simulation failed');
+      setBlackSwanResult(data);
+      if (data.suspendEnrollments) setSuspendEnrollments(true);
+      fetchAnalytics(); fetchClaims();
+    } catch (e: any) { setError(e.message); }
+    setL('blackSwan', false);
+  };
+
   const fraudColor = (score: number) => score > 70 ? 'text-red-600' : score > 30 ? 'text-amber-600' : 'text-emerald-600';
   const fraudBg = (score: number) => score > 70 ? 'bg-red-50 border-red-200' : score > 30 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200';
 
@@ -193,7 +231,7 @@ export function AdminDashboard() {
         <div className="space-y-4">
           {/* Run Trigger Scan */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-            className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+            className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-6 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
@@ -261,7 +299,7 @@ export function AdminDashboard() {
               { label: 'Total Paid', value: `₹${claimsSummary.totalPaidAmount || 0}`, icon: DollarSign, color: 'text-purple-600', iconBg: 'bg-purple-100' },
             ].map((stat, i) => (
               <motion.div key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
-                className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex items-center justify-between">
+                className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-4 shadow-sm flex items-center justify-between">
                 <div>
                     <p className="text-slate-500 text-xs font-semibold mb-1">{stat.label}</p>
                     <p className="text-2xl font-black text-slate-800">{stat.value}</p>
@@ -272,6 +310,89 @@ export function AdminDashboard() {
               </motion.div>
             ))}
           </div>
+
+          {/* Suspend Enrollments Warning Banner */}
+          {suspendEnrollments && (
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+              className="bg-red-600 border border-red-700 rounded-xl p-4 shadow-lg flex items-center gap-3">
+              <AlertTriangle className="w-6 h-6 text-white flex-shrink-0 animate-pulse" />
+              <div className="flex-1">
+                <p className="text-white font-black text-base">⛔ SUSPEND ENROLLMENTS — Liquidity Pool Critically Low</p>
+                <p className="text-red-100 text-sm mt-0.5">New policy issuance suspended until the pool is recapitalized. Existing claims continue processing.</p>
+              </div>
+              <button onClick={() => toggleEnrollmentSuspension(false)} className="text-red-200 hover:text-white ml-2 transition-colors">
+                <XCircle className="w-5 h-5" />
+              </button>
+            </motion.div>
+          )}
+
+          {/* 14-Day Black Swan Simulation */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+            className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <TrendingDown className="w-6 h-6 text-red-600" /> Black Swan Stress Test
+                </h2>
+                <p className="text-slate-500 text-sm mt-1">
+                  Fires 14 consecutive days of max-severity payouts to drain the liquidity pool and trigger the Suspend Enrollments protocol.
+                </p>
+              </div>
+              <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                onClick={simulateBlackSwan} disabled={loading.blackSwan}
+                className="px-6 py-3 bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 text-white font-bold rounded-xl flex items-center gap-2 disabled:opacity-50 shadow-md shadow-red-300">
+                {loading.blackSwan
+                  ? <><Loader2 className="w-5 h-5 animate-spin" />Simulating...</>
+                  : <><Zap className="w-5 h-5" />Simulate 14-Day Black Swan Event</>}
+              </motion.button>
+            </div>
+
+            {blackSwanResult && (
+              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3 mt-2">
+                {/* Summary KPIs */}
+                <div className="grid grid-cols-4 gap-3">
+                  {[
+                    { l: 'Days Simulated', v: blackSwanResult.simulationDays, c: 'text-slate-800' },
+                    { l: 'Workers Hit',    v: blackSwanResult.workersAffected, c: 'text-amber-600' },
+                    { l: 'Total Payouts',  v: `₹${blackSwanResult.totalPayouts}`, c: 'text-red-600' },
+                    { l: 'Final Pool',     v: `₹${blackSwanResult.finalPoolBalance}`, c: blackSwanResult.poolDrained ? 'text-red-600' : 'text-amber-600' },
+                  ].map((k, i) => (
+                    <div key={i} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+                      <p className={`text-xl font-black ${k.c}`}>{k.v}</p>
+                      <p className="text-xs text-slate-500 font-medium mt-0.5">{k.l}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Day-by-day pool drain bar chart */}
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
+                  <p className="text-xs font-bold text-slate-700 mb-3">📉 Pool Balance Drain — Day by Day</p>
+                  <div className="flex items-end gap-1 h-16">
+                    {(blackSwanResult.events || []).map((e: any, i: number) => {
+                      const maxBal = blackSwanResult.seedBalance || 1;
+                      const pct = Math.max(4, Math.round((e.runningBalance / maxBal) * 100));
+                      return (
+                        <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
+                          <div
+                            className={`w-full rounded-sm transition-all ${e.poolDrained ? 'bg-red-500' : pct < 30 ? 'bg-amber-400' : 'bg-cyan-500'}`}
+                            style={{ height: `${pct}%` }}
+                          />
+                          <span className="text-[9px] text-slate-400">D{e.day}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {blackSwanResult.poolDrained && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-center gap-2 text-sm font-bold text-red-700">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                    Pool drained on Day {(blackSwanResult.events || []).find((e: any) => e.poolDrained)?.day ?? '—'}. Enrollment suspension protocol activated.
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </motion.div>
         </div>
       )}
 
@@ -298,7 +419,7 @@ export function AdminDashboard() {
               
               return (
               <motion.div key={w.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
-                className="bg-white border border-slate-200 rounded-xl p-4 hover:border-teal-400 hover:shadow-md transition-all shadow-sm">
+                className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-4 hover:border-teal-400 hover:shadow-md transition-all shadow-sm">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-bold text-slate-800">{w.fullName}</h3>
                   <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${
@@ -347,7 +468,7 @@ export function AdminDashboard() {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
               className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setPlatformData(null)}>
               <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }}
-                className="bg-white border border-slate-200 rounded-xl p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+                className="bg-white/90 backdrop-blur-md border border-slate-200/60 rounded-xl p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-bold text-slate-900">🚚 Platform Telemetry</h3>
                   <button onClick={() => setPlatformData(null)} className="text-slate-400 hover:text-slate-600 transition-colors"><XCircle className="w-5 h-5" /></button>
@@ -393,15 +514,15 @@ export function AdminDashboard() {
                   onClick={() => setSelectedWorker(null)} className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40" />
                 <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
                   className="fixed inset-0 flex items-center justify-center p-4 z-50">
-                  <div className="bg-white border border-slate-200 shadow-xl rounded-xl p-6 max-w-md w-full space-y-4">
+                  <div className="bg-white/90 backdrop-blur-md border border-slate-200/60 shadow-xl rounded-xl p-6 max-w-md w-full space-y-4">
                     <h3 className="text-lg font-bold text-slate-900">⚡ Trigger Disruption for {selectedWorker.fullName}</h3>
                     <div className="grid grid-cols-1 gap-2">
                       {[
-                        { v: 'monsoon', l: '🌧️ Monsoon', c: 'from-blue-500 to-cyan-500 shadow-blue-200' },
-                        { v: 'heatwave', l: '🔥 Heatwave', c: 'from-orange-500 to-red-500 shadow-orange-200' },
-                        { v: 'curfew', l: '🚨 Curfew', c: 'from-red-500 to-pink-500 shadow-red-200' },
-                        { v: 'pollution', l: '💨 Pollution', c: 'from-amber-400 to-orange-500 shadow-amber-200' },
-                        { v: 'strike', l: '⛔ Strike', c: 'from-purple-500 to-pink-500 shadow-purple-200' },
+                        { v: 'monsoon',   l: '🌊 Trigger Flood: Ward K/E – Andheri East',   c: 'from-blue-500 to-cyan-500 shadow-blue-200' },
+                        { v: 'heatwave',  l: '🔥 Trigger Heatwave: Zone 4 – Bandra West',    c: 'from-orange-500 to-red-500 shadow-orange-200' },
+                        { v: 'curfew',    l: '🚨 Trigger Curfew: Sector 7 – Dharavi',         c: 'from-red-500 to-pink-500 shadow-red-200' },
+                        { v: 'pollution', l: '💨 Trigger Smog: AQI>400 – Andheri North',      c: 'from-amber-400 to-orange-500 shadow-amber-200' },
+                        { v: 'strike',    l: '⛔ Trigger Strike: NH-8 – Gurgaon Hub',          c: 'from-purple-500 to-pink-500 shadow-purple-200' },
                       ].map(o => (
                         <button key={o.v} onClick={() => setDisruptionType(o.v)}
                           className={`p-2.5 rounded-lg text-sm font-semibold transition-all shadow-sm ${disruptionType === o.v ? `bg-gradient-to-r ${o.c} text-white` : 'bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100 hover:text-slate-900'}`}>
@@ -445,7 +566,7 @@ export function AdminDashboard() {
               { l: 'Rejected', v: claimsSummary.rejected || 0, c: 'text-red-600' },
               { l: 'Avg Fraud', v: claimsSummary.avgFraudScore || 0, c: (claimsSummary.avgFraudScore || 0) > 30 ? 'text-amber-600' : 'text-emerald-600' },
             ].map((s, i) => (
-              <div key={i} className="bg-white border border-slate-200 shadow-sm rounded-lg p-3 text-center">
+              <div key={i} className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-lg p-3 text-center">
                 <p className={`text-2xl font-black ${s.c}`}>{s.v}</p>
                 <p className="text-xs text-slate-500 font-medium">{s.l}</p>
               </div>
@@ -453,7 +574,7 @@ export function AdminDashboard() {
           </div>
 
           {/* Claims Table */}
-          <div className="bg-white border border-slate-200 shadow-sm rounded-xl overflow-hidden">
+          <div className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-xl overflow-hidden">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
@@ -564,7 +685,7 @@ export function AdminDashboard() {
           </div>
 
           {/* Flagged Claims */}
-          <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-4">
+          <div className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-xl p-4">
             <h3 className="text-sm font-bold text-slate-800 mb-3">{`🚨 Flagged Claims (Fraud Score > 30)`}</h3>
             <div className="space-y-2">
               {claims.filter(c => (c.fraudScore || 0) > 30).length === 0 ? (
@@ -640,7 +761,7 @@ export function AdminDashboard() {
                   { l: 'Pool Balance', v: `₹${Math.max(0, analytics.financials?.poolBalance || 0)}`, sub: 'Liquidity Pool', c: 'text-cyan-600', iconBg: 'bg-cyan-50' },
                 ].map((m, i) => (
                   <motion.div key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
-                    className="bg-white border border-slate-200 shadow-sm rounded-xl p-4">
+                    className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-xl p-4">
                     <p className={`text-2xl font-black ${m.c}`}>{m.v}</p>
                     <p className="text-sm font-bold text-slate-800 mt-1">{m.l}</p>
                     <p className="text-xs font-medium text-slate-500">{m.sub}</p>
@@ -650,7 +771,7 @@ export function AdminDashboard() {
 
               {/* Claims & Fraud */}
               <div className="grid grid-cols-2 gap-3">
-                <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-5">
+                <div className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-xl p-5">
                   <h3 className="text-sm font-bold text-slate-800 mb-4">📋 Claims Breakdown</h3>
                   <div className="space-y-3">
                     {[
@@ -675,7 +796,7 @@ export function AdminDashboard() {
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-5">
+                <div className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-xl p-5">
                   <h3 className="text-sm font-bold text-slate-800 mb-3">🛡️ Fraud Metrics</h3>
                   <div className="grid grid-cols-2 gap-3 text-center">
                     <div className="bg-slate-50 border border-slate-100 rounded-lg p-3">

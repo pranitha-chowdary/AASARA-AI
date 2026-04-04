@@ -26,7 +26,7 @@ export function AdminLogin({ onLoginSuccess }: AdminLoginProps) {
       const payload = { email, password };
       console.log('📤 Sending payload:', JSON.stringify(payload));
 
-      const response = await fetch('http://localhost:5001/api/admin/login', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/admin/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -85,6 +85,8 @@ export function AdminLogin({ onLoginSuccess }: AdminLoginProps) {
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="admin@aasara.ai"
                   className="w-full pl-10 pr-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  pattern="^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$"
+                  title="Please enter a valid email address"
                   required
                 />
               </div>

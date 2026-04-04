@@ -22,7 +22,7 @@ export function ActivePlanDashboard({ user, onboardingStatus, onLogout }: Active
       const token = localStorage.getItem('authToken');
 
       // Fetch active subscription
-      const subResponse = await fetch('http://localhost:5001/api/subscription/active', {
+      const subResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/subscription/active`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -32,7 +32,7 @@ export function ActivePlanDashboard({ user, onboardingStatus, onLogout }: Active
       }
 
       // Fetch calendar events
-      const calResponse = await fetch('http://localhost:5001/api/subscription/calendar', {
+      const calResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/subscription/calendar`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 

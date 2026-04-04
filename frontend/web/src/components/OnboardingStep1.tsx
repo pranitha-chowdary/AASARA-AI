@@ -38,7 +38,7 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
 
     try {
       const token = localStorage.getItem('authToken');
-      const response = await fetch('http://localhost:5001/api/onboarding/link-platform', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/onboarding/link-platform`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

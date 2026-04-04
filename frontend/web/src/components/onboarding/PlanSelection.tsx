@@ -44,7 +44,7 @@ export function PlanSelection({ userId, onSuccess }: PlanSelectionProps) {
 
       console.log('📡 DEBUG: Sending request to calculate-premium endpoint...');
       
-      const response = await fetch('http://localhost:5001/api/subscription/calculate-premium', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/subscription/calculate-premium`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -86,7 +86,7 @@ export function PlanSelection({ userId, onSuccess }: PlanSelectionProps) {
 
     try {
       const token = localStorage.getItem('authToken');
-      const orderResponse = await fetch('http://localhost:5001/api/subscription/create-order', {
+      const orderResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/subscription/create-order`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -114,7 +114,7 @@ export function PlanSelection({ userId, onSuccess }: PlanSelectionProps) {
         order_id: orderData.orderId,
         handler: async (response: any) => {
           try {
-            const verifyResponse = await fetch('http://localhost:5001/api/subscription/verify-payment', {
+            const verifyResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/subscription/verify-payment`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',

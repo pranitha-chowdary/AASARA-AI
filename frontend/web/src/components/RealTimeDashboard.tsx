@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
-const GATEWAY_URL = 'http://localhost:5001';
+const GATEWAY_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export function RealTimeDashboard() {
   const { workerProfile } = useAuth();
@@ -175,6 +175,9 @@ export function RealTimeDashboard() {
     }
   };
 
+  // Canvas ref for photo capture
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
   const stopCamera = () => {
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
@@ -185,9 +188,20 @@ export function RealTimeDashboard() {
 
   const capturePhoto = () => {
     if (videoRef.current) {
-      // Small delay simulation or just capture
+      // Capture current video frame onto a hidden canvas and extract base64
+      const canvas = canvasRef.current || document.createElement('canvas');
+      canvas.width  = videoRef.current.videoWidth  || 320;
+      canvas.height = videoRef.current.videoHeight || 240;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      }
+      const photoData = canvas.toDataURL('image/jpeg', 0.8); // base64 JPEG
       stopCamera();
-      verifySyndicateAnomaly();
+      verifySyndicateAnomaly(photoData);
+    } else {
+      stopCamera();
+      verifySyndicateAnomaly(null);
     }
   };
 
@@ -215,15 +229,15 @@ export function RealTimeDashboard() {
     return () => stopCamera();
   }, [showMicroVerify]);
 
-  const verifySyndicateAnomaly = async () => {
+  const verifySyndicateAnomaly = async (photoData?: string | null) => {
     setVerifyLoading(true);
-    // Simulate 3s vision processing
-    await new Promise(r => setTimeout(r, 3000));
+    // Brief processing pause for UX
+    await new Promise(r => setTimeout(r, 2500));
     try {
       const res = await fetch(`${GATEWAY_URL}/api/claims/verify-anomaly`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
-        body: JSON.stringify({ mockResult })
+        body: JSON.stringify({ mockResult, photoData: photoData || undefined })
       });
       const data = await res.json();
       if (res.ok) {
@@ -233,8 +247,8 @@ export function RealTimeDashboard() {
         setError(data.error || 'Identity verification failed. Please try again.');
         setVerifyLoading(false);
       }
-    } catch (e: any) { 
-        console.error('Verification error', e); 
+    } catch (e: any) {
+        console.error('Verification error', e);
         setError('Machine Learning Engine rejected the proof. Please perform the gesture again.');
         setVerifyLoading(false);
     }
@@ -275,7 +289,7 @@ export function RealTimeDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-transparent">
       <div className="max-w-5xl mx-auto p-6 space-y-6">
 
         {/* ====== HEADER with Notification Bell ====== */}
@@ -287,7 +301,7 @@ export function RealTimeDashboard() {
           <div className="relative">
             <button
               onClick={() => { setShowNotifications(!showNotifications); if (!showNotifications) markNotificationsRead(); }}
-              className="relative p-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition shadow-sm"
+              className="relative p-2 bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-lg hover:bg-white transition shadow-sm"
             >
               <Bell className="w-5 h-5 text-slate-500" />
               {unreadCount > 0 && (
@@ -494,7 +508,7 @@ export function RealTimeDashboard() {
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="bg-white border border-slate-200 rounded-xl p-5 relative overflow-hidden shadow-sm"
+            className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-5 relative overflow-hidden shadow-sm"
           >
             {/* Faux platform branding */}
             <div className="flex items-center justify-between mb-4">
@@ -560,7 +574,7 @@ export function RealTimeDashboard() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm"
+            className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-5 shadow-sm"
           >
             <div className="flex items-center justify-between mb-4">
               <span className="text-slate-500 text-sm font-semibold">SUBSCRIPTION DETAILS</span>
@@ -606,7 +620,7 @@ export function RealTimeDashboard() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
-          className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm"
+          className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl overflow-hidden shadow-sm"
         >
           <div className="p-4 border-b border-slate-200 bg-slate-50">
             <h3 className="font-bold text-slate-800 flex items-center gap-2">
@@ -748,6 +762,8 @@ export function RealTimeDashboard() {
                             className="w-full h-full object-cover scale-x-[-1]" 
                           />
                         )}
+                        {/* Hidden canvas used to capture a still frame for EfficientNetB0 analysis */}
+                        <canvas ref={canvasRef} style={{ display: 'none' }} />
                         <div className="absolute top-3 right-3 flex gap-2">
                            <div className="bg-red-500/80 backdrop-blur-md px-2 py-1 rounded-md flex items-center gap-1.5">
                              <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />

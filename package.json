@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "libphonenumber-js": "^1.12.41",
+    "nodemailer": "^8.0.4"
+  }
+}
