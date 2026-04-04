@@ -1,12 +1,11 @@
 flask==3.0.0
 flask-cors==4.0.0
 requests==2.31.0
-numpy==1.26.4
-scikit-learn==1.4.0
+numpy>=2.0.0
+scikit-learn>=1.4.0
 python-dotenv==1.0.0
-# Vision AI — EfficientNetB0 disruption verification
-# CPU-only wheels keep the Render free tier build under the disk limit
-torch==2.2.2+cpu
-torchvision==0.17.2+cpu
+# Vision AI — EfficientNetB0 disruption verification (CPU-only, Python 3.13 compatible)
+torch==2.11.0+cpu
+torchvision==0.26.0+cpu
 pillow>=10.0.0
 --extra-index-url https://download.pytorch.org/whl/cpu
