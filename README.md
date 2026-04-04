@@ -3,7 +3,7 @@
 ### 🎥 2-Minute Pitch & Prototype Demonstration
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=31V0FUuuhiw">
+  <a href="https://youtu.be/RLQhFWRIxZ0">
     <img src="https://drive.google.com/uc?export=view&id=1YjdBzP-IvrxDjsd15-YtSjw4O8Bp8tCl" width="600">
   </a>
 </p>
@@ -70,6 +70,8 @@ In a fully deployed real-world scenario, AASARA operates as an invisible, automa
 4. **The Disruption Trigger:** An external event occurs—for example, a weather API reports severe waterlogging (>20mm rain) in the driver's current operating zone.
 5. **AI Validation & Payout:** AASARA AI instantly cross-references the weather alert with the driver's status. It confirms the driver was "Online" and stuck in the affected zone. A parametric claim is automatically approved, and the payout is sent instantly to the driver's UPI wallet.
 
+6. **The "Store & Forward":** Offline Fallback: Severe weather often destroys local cell towers. If a worker's internet drops, AASARA AI relies on their "Last Known State." Our backend processes the smart-contract payout server-side and triggers a Twilio SMS Gateway. Even if the local tower is down, telecom carriers queue this SMS, ensuring the worker receives a text confirmation of their financial safety the exact second they regain a single bar of signal.
+
 ### Part B: The Hackathon Demonstration (The Mock Data Layer)
 Because we are a third-party startup, we do not have access to Zomato or Swiggy's private internal databases or live rider GPS data. To prove our core idea works for the DEVTrails hackathon, we built a **Mock Data Layer** purely for demonstration purposes.
 
@@ -99,6 +101,16 @@ Here is our dynamic pricing model for a standard food delivery partner based in 
 Payouts are instantly activated without human intervention when these thresholds are breached:
 * **Environmental:** Heatwave (>42°C for 3+ hours), Heavy Rain (>20mm/hr), Severe AQI.
 * **Social:** Unplanned Section 144 curfews, documented local transport strikes.
+* **Hyper-Local Ward-Level Precision:** We do not use "City-Average" weather data, as it is highly inaccurate for gig workers. Our triggers are tied to hyper-local API resolution (e.g., triggering a flood specifically in Ward K/E - Andheri East, not just "Mumbai").
+
+The 7-Day Underwriting Rule: To prevent workers from subscribing only when a storm is forecasted, our system cross-references platform telemetry. A worker must have a minimum of 7 active delivery days in the past 30 days for their cover to be valid.
+
+### Actuarial Solvency & The 14-Day Stress Test
+ To ensure our Liquidity Pool survives catastrophic "Black Swan" events without bankrupting the protocol, we built strict actuarial logic into our backend:
+
+Burning Cost Rate (BCR) & Loss Ratio: We continuously monitor our pool health using the formula: Loss Ratio = (Total Claims Paid) / (Total Premiums Collected).
+
+The Circuit Breaker: If a severe, continuous disaster (e.g., a 14-day monsoon) causes our Loss Ratio to breach the 85% threshold, our smart contracts automatically trigger a "Rollback and Suspend" protocol. New enrollments are instantly halted to prevent adverse selection, ensuring we maintain enough liquidity to pay the workers already trapped in the disaster zone.
 
 ---
 
@@ -164,6 +176,9 @@ Vision AI Resolution: This photo is processed via a lightweight Vision AI model 
 * **Database:** ![MongoDB](https://img.shields.io/badge/MongoDB-%234ea94b.svg?style=for-the-badge&logo=mongodb&logoColor=white)
 * **AI/ML Engine:** ![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54) ![Scikit-Learn](https://img.shields.io/badge/scikit--learn-%23F7931E.svg?style=for-the-badge&logo=scikit-learn&logoColor=white) ![TensorFlow](https://img.shields.io/badge/TensorFlow-%23FF6F00.svg?style=for-the-badge&logo=TensorFlow&logoColor=white)
 * **Web3 & Automation:** ![Solidity](https://img.shields.io/badge/Solidity-%23363636.svg?style=for-the-badge&logo=solidity&logoColor=white) ![Chainlink](https://img.shields.io/badge/Chainlink-375BD2?style=for-the-badge&logo=Chainlink&logoColor=white)
+* **Payments:** ![Razorpay](https://img.shields.io/badge/Razorpay-%230072C6.svg?style=for-the-badge&logo=razorpay&logoColor=white)
+
+* **Communication APIs:** ![Twilio](https://img.shields.io/badge/Twilio-F22F46?style=for-the-badge&logo=twilio&logoColor=white)
 * **External APIs:** OpenWeatherMap API (Environmental Triggers), NewsData API (Social Triggers), Mock Payment Gateway (UPI/Stripe).
 
 **Development Roadmap:**
