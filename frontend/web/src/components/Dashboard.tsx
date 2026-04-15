@@ -40,10 +40,10 @@ export function Dashboard() {
       if (subResponse.ok) {
         // User has active subscription - go to dashboard
         setCurrentStep(3);
-      } else if (subResponse.status === 404) {
-        // No subscription yet - check if onboarding started
+      } else if (subResponse.status === 404 || subResponse.status === 400) {
+        // No subscription or expired/invalid subscription — check onboarding progress
         const step = (user as any).onboardingStep || 1;
-        setCurrentStep(step >= 3 ? 3 : step);
+        setCurrentStep(step >= 3 ? 2 : step);
       } else if ((user as any).onboardingCompleted) {
         // Fallback: check if user object says onboarding is complete
         setCurrentStep(3);

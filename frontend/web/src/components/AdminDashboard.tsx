@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { io, Socket } from 'socket.io-client';
 import {
   Users, AlertTriangle, CheckCircle2, Zap, Shield,
   RefreshCw, DollarSign, BarChart3, Target,
@@ -32,6 +33,9 @@ export function AdminDashboard() {
   const [blackSwanResult, setBlackSwanResult] = useState<any>(null);
   const [suspendEnrollments, setSuspendEnrollments] = useState(false);
   const token = localStorage.getItem('adminToken');
+  const socketRef = useRef<Socket | null>(null);
+  const [pipelineEvents, setPipelineEvents] = useState<any[]>([]);
+  const [socketConnected, setSocketConnected] = useState(false);
 
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
@@ -40,6 +44,44 @@ export function AdminDashboard() {
   // Auto-dismiss messages
   useEffect(() => { if (success) { const t = setTimeout(() => setSuccess(null), 5000); return () => clearTimeout(t); } }, [success]);
   useEffect(() => { if (error) { const t = setTimeout(() => setError(null), 8000); return () => clearTimeout(t); } }, [error]);
+
+  // Socket.io — real-time pipeline events for admin
+  useEffect(() => {
+    if (!token) return;
+    const socket = io(API, {
+      auth: { token },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 2000,
+    });
+
+    socket.on('connect', () => setSocketConnected(true));
+    socket.on('disconnect', () => setSocketConnected(false));
+
+    socket.on('pipeline:stage', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, id: Date.now() + Math.random() }, ...prev].slice(0, 30));
+    });
+    socket.on('pipeline:complete', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'complete', id: Date.now() + Math.random() }, ...prev].slice(0, 30));
+      fetchClaims();
+      fetchWorkers();
+    });
+    socket.on('payout:status', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'webhook_confirmation', id: Date.now() + Math.random() }, ...prev].slice(0, 30));
+      fetchClaims();
+    });
+
+    socket.on('payment:confirmed', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'payment_captured', id: Date.now() + Math.random() }, ...prev].slice(0, 30));
+    });
+
+    socket.on('payment:failed', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'payment_failed', id: Date.now() + Math.random() }, ...prev].slice(0, 30));
+    });
+
+    socketRef.current = socket;
+    return () => { socket.disconnect(); socketRef.current = null; };
+  }, []);
 
   const fetchWorkers = useCallback(async () => {
     setL('workers', true);
@@ -196,6 +238,13 @@ export function AdminDashboard() {
   const fraudColor = (score: number) => score > 70 ? 'text-red-600' : score > 30 ? 'text-amber-600' : 'text-emerald-600';
   const fraudBg = (score: number) => score > 70 ? 'bg-red-50 border-red-200' : score > 30 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200';
 
+  // BCR (Burning Cost Rate) color logic
+  const bcrColor = (ratio: number) => ratio <= 0.5 ? 'text-emerald-600' : ratio <= 0.75 ? 'text-cyan-600' : ratio <= 1.0 ? 'text-amber-600' : 'text-red-600';
+  const bcrBg = (ratio: number) => ratio <= 0.5 ? 'from-emerald-500 to-emerald-400' : ratio <= 0.75 ? 'from-cyan-500 to-teal-400' : ratio <= 1.0 ? 'from-amber-500 to-amber-400' : 'from-red-500 to-red-400';
+  const bcrLabel = (ratio: number) => ratio <= 0.5 ? 'Excellent' : ratio <= 0.75 ? 'Healthy' : ratio <= 1.0 ? 'Break-even' : 'Loss';
+  const poolHealthColorMap: Record<string, string> = { green: 'text-emerald-600', amber: 'text-amber-600', orange: 'text-orange-600', red: 'text-red-600' };
+  const poolHealthBgMap: Record<string, string> = { green: 'bg-emerald-500', amber: 'bg-amber-500', orange: 'bg-orange-500', red: 'bg-red-500' };
+
   return (
     <div className="w-full max-w-7xl mx-auto space-y-4">
       {/* Tab Navigation */}
@@ -289,6 +338,54 @@ export function AdminDashboard() {
               </motion.div>
             )}
           </motion.div>
+
+          {/* Live Pipeline Feed */}
+          {pipelineEvents.length > 0 && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+              className="bg-white/80 backdrop-blur-sm border border-teal-200/60 rounded-xl overflow-hidden shadow-sm">
+              <div className="p-4 border-b border-teal-200 bg-teal-50 flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-teal-500"></span>
+                </span>
+                <h3 className="font-bold text-teal-800 text-sm">Live Pipeline Feed</h3>
+                {socketConnected && <span className="text-xs text-teal-600 ml-auto">● Connected</span>}
+              </div>
+              <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+                {pipelineEvents.map((evt) => {
+                  const cfg: Record<string, { icon: string; color: string; label: string }> = {
+                    trigger_detected: { icon: '🌩️', color: 'text-amber-700 bg-amber-50', label: 'Trigger' },
+                    fraud_check: { icon: '🛡️', color: 'text-blue-700 bg-blue-50', label: 'Fraud Check' },
+                    payout_initiated: { icon: '💸', color: 'text-emerald-700 bg-emerald-50', label: 'Payout' },
+                    blockchain_logged: { icon: '⛓️', color: 'text-purple-700 bg-purple-50', label: 'Blockchain' },
+                    webhook_confirmation: { icon: '✅', color: 'text-teal-700 bg-teal-50', label: 'Bank Confirmed' },
+                    payment_captured: { icon: '💰', color: 'text-green-700 bg-green-50', label: 'Premium Verified' },
+                    payment_failed: { icon: '❌', color: 'text-red-700 bg-red-50', label: 'Payment Failed' },
+                    complete: { icon: '🎉', color: 'text-emerald-700 bg-emerald-50', label: 'Complete' },
+                  };
+                  const c = cfg[evt.stage] || { icon: '📡', color: 'text-slate-700 bg-slate-50', label: evt.stage };
+                  return (
+                    <div key={evt.id} className="px-4 py-2.5 flex items-center gap-3 text-sm hover:bg-slate-50 transition">
+                      <span className="text-base">{c.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${c.color}`}>{c.label}</span>
+                        <p className="text-slate-600 text-xs truncate">
+                          {evt.workerName && <span className="font-medium">{evt.workerName}</span>}
+                          {evt.amount && <span> • ₹{evt.amount}</span>}
+                          {evt.fraudVerdict && <span> • {evt.fraudVerdict}</span>}
+                          {evt.payoutMethod && evt.stage === 'payout_initiated' && <span> • {evt.payoutMethod}</span>}
+                          {evt.txHash && <span> • tx:{evt.txHash.slice(0, 10)}…</span>}
+                        </p>
+                      </div>
+                      <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                        {evt.timestamp ? new Date(evt.timestamp).toLocaleTimeString() : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
 
           {/* Quick Stats */}
           <div className="grid grid-cols-4 gap-3">
@@ -434,6 +531,10 @@ export function AdminDashboard() {
                   <p>📧 {w.email}</p>
                   <p>📱 {w.platform || 'Not linked'} • {w.subscriptionStatus === 'active' ? '✅ Subscribed' : '❌ No plan'}</p>
                   {w.subscriptionAmount && <p className="text-slate-600">💰 Premium: ₹{w.subscriptionAmount} • {w.riskTier || 'N/A'}</p>}
+                  {w.lastKnownLocation?.lat && (
+                    <p className="text-emerald-600 font-bold">📍 {w.lastKnownLocation.lat.toFixed(4)}°N, {w.lastKnownLocation.lng.toFixed(4)}°E{w.city ? ` • ${w.city}` : ''}</p>
+                  )}
+                  {!w.lastKnownLocation?.lat && <p className="text-slate-400">📍 No GPS data</p>}
                   {isOnline && flowLabel && (
                     <p className={`font-bold mt-1.5 ${pingFresh ? 'text-emerald-600' : 'text-amber-600'}`}>
                       ⚡ Trigger will use: {flowLabel}
@@ -771,6 +872,137 @@ export function AdminDashboard() {
 
               {/* Claims & Fraud */}
               <div className="grid grid-cols-2 gap-3">
+
+                {/* ===== LOSS RATIO (BCR) GAUGE + POOL HEALTH ===== */}
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+                  className="col-span-2 bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-6 shadow-sm">
+                  <h3 className="text-base font-extrabold text-slate-900 mb-5 flex items-center gap-2">
+                    <BarChart3 className="w-5 h-5 text-purple-600" /> Financial Proof — Loss Ratio &amp; Pool Health
+                  </h3>
+                  <div className="grid grid-cols-3 gap-6">
+
+                    {/* BCR Gauge */}
+                    <div className="flex flex-col items-center">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Burning Cost Rate (BCR)</p>
+                      <div className="relative w-36 h-36">
+                        {/* Background ring */}
+                        <svg className="w-36 h-36 transform -rotate-90" viewBox="0 0 120 120">
+                          <circle cx="60" cy="60" r="52" fill="none" stroke="#e2e8f0" strokeWidth="10" />
+                          <circle cx="60" cy="60" r="52" fill="none"
+                            stroke={(() => { const r = analytics?.financials?.lossRatio || 0; return r <= 0.5 ? '#10b981' : r <= 0.75 ? '#06b6d4' : r <= 1 ? '#f59e0b' : '#ef4444'; })()}
+                            strokeWidth="10" strokeLinecap="round"
+                            strokeDasharray={`${Math.min(1, analytics?.financials?.lossRatio || 0) * 327} 327`}
+                          />
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center">
+                          <p className={`text-3xl font-black ${bcrColor(analytics?.financials?.lossRatio || 0)}`}>
+                            {(analytics?.financials?.lossRatio || 0).toFixed(2)}
+                          </p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">
+                            {bcrLabel(analytics?.financials?.lossRatio || 0)}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-3 text-center">
+                        <p className="text-xs text-slate-500 font-medium">Target: <span className="font-bold text-slate-700">≤ 0.65</span></p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Payouts ÷ Pool Contributions</p>
+                      </div>
+                      {/* BCR scale legend */}
+                      <div className="flex items-center gap-1 mt-3">
+                        {[
+                          { l: '0–0.5', c: 'bg-emerald-500' },
+                          { l: '0.5–0.75', c: 'bg-cyan-500' },
+                          { l: '0.75–1.0', c: 'bg-amber-500' },
+                          { l: '>1.0', c: 'bg-red-500' },
+                        ].map((s, i) => (
+                          <div key={i} className="flex items-center gap-0.5">
+                            <div className={`w-2 h-2 rounded-full ${s.c}`} />
+                            <span className="text-[9px] text-slate-400">{s.l}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Pool Health Meter */}
+                    <div className="flex flex-col items-center">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Pool Health</p>
+                      <div className="w-full max-w-[200px] space-y-3">
+                        {/* Reserve ratio bar */}
+                        <div>
+                          <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1">
+                            <span>Reserve Ratio</span>
+                            <span>{((analytics?.financials?.reserveRatio || 0) * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="h-4 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                            <motion.div 
+                              initial={{ width: 0 }}
+                              animate={{ width: `${Math.min(100, (analytics?.financials?.reserveRatio || 0) * 100)}%` }}
+                              transition={{ duration: 1, ease: 'easeOut' }}
+                              className={`h-full rounded-full bg-gradient-to-r ${bcrBg(1 - (analytics?.financials?.reserveRatio || 0))}`}
+                            />
+                          </div>
+                        </div>
+                        {/* Status badge */}
+                        <div className={`text-center py-2.5 rounded-lg border ${
+                          analytics?.financials?.poolHealth?.color === 'green' ? 'bg-emerald-50 border-emerald-200' :
+                          analytics?.financials?.poolHealth?.color === 'amber' ? 'bg-amber-50 border-amber-200' :
+                          analytics?.financials?.poolHealth?.color === 'orange' ? 'bg-orange-50 border-orange-200' :
+                          'bg-red-50 border-red-200'
+                        }`}>
+                          <p className={`text-lg font-black uppercase ${poolHealthColorMap[analytics?.financials?.poolHealth?.color || 'green'] || 'text-emerald-600'}`}>
+                            {analytics?.financials?.poolHealth?.status || 'healthy'}
+                          </p>
+                          <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                            {analytics?.financials?.poolHealth?.message || ''}
+                          </p>
+                        </div>
+                        {/* Contributions vs Payouts mini bars */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold text-slate-500 w-16">Premiums In</span>
+                            <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-emerald-500 rounded-full" style={{ width: '100%' }} />
+                            </div>
+                            <span className="text-[10px] font-bold text-emerald-600 w-12 text-right">₹{Math.round(analytics?.financials?.poolContributions || 0)}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold text-slate-500 w-16">Claims Out</span>
+                            <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-purple-500 rounded-full" 
+                                style={{ width: `${analytics?.financials?.poolContributions ? Math.min(100, ((analytics.financials.poolPayouts || 0) / analytics.financials.poolContributions) * 100) : 0}%` }} />
+                            </div>
+                            <span className="text-[10px] font-bold text-purple-600 w-12 text-right">₹{Math.round(analytics?.financials?.poolPayouts || 0)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Financial Summary Table */}
+                    <div className="flex flex-col">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Actuarial Summary</p>
+                      <div className="space-y-2 flex-1">
+                        {[
+                          { label: 'Pool Contributions', value: `₹${Math.round(analytics?.financials?.poolContributions || 0)}`, color: 'text-emerald-700' },
+                          { label: 'Total Claims Paid', value: `₹${Math.round(analytics?.financials?.poolPayouts || 0)}`, color: 'text-purple-700' },
+                          { label: 'Current Pool Balance', value: `₹${Math.round(analytics?.financials?.poolBalance || 0)}`, color: 'text-cyan-700' },
+                          { label: 'Loss Ratio (BCR)', value: (analytics?.financials?.lossRatio || 0).toFixed(2), color: bcrColor(analytics?.financials?.lossRatio || 0) },
+                          { label: 'Reserve Ratio', value: `${((analytics?.financials?.reserveRatio || 0) * 100).toFixed(0)}%`, color: 'text-slate-700' },
+                          { label: 'Net Surplus/Deficit', value: `${(analytics?.financials?.netMargin || 0) >= 0 ? '+' : ''}₹${Math.round(analytics?.financials?.netMargin || 0)}`, color: (analytics?.financials?.netMargin || 0) >= 0 ? 'text-emerald-700' : 'text-red-700' },
+                        ].map((row, i) => (
+                          <div key={i} className="flex justify-between items-center py-1.5 border-b border-slate-100 last:border-0">
+                            <span className="text-xs text-slate-500 font-medium">{row.label}</span>
+                            <span className={`text-sm font-black ${row.color}`}>{row.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mt-3">
+                        <p className="text-[10px] text-slate-400 font-medium leading-relaxed">
+                          💡 A BCR of <strong>≤ 0.65</strong> means the pool retains <strong>35%+</strong> as reserves — the standard solvency target for parametric micro-insurance per actuarial best practice.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
                 <div className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-xl p-5">
                   <h3 className="text-sm font-bold text-slate-800 mb-4">📋 Claims Breakdown</h3>
                   <div className="space-y-3">

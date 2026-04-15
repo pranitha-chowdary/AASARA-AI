@@ -3,6 +3,7 @@ flask-cors==4.0.0
 requests==2.31.0
 numpy>=2.0.0
 scikit-learn>=1.4.0
+xgboost>=2.0.0
 python-dotenv==1.0.0
 # Vision AI — EfficientNetB0 disruption verification (CPU-only, Python 3.13 compatible)
 torch==2.11.0+cpu

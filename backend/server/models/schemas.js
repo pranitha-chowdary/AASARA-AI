@@ -99,10 +99,11 @@ const claimSchema = new mongoose.Schema(
     fraudVerdict: { type: String, enum: ['auto_approve', 'micro_verify', 'reject', 'admin_override'], default: 'auto_approve' },
     fraudDetails: { type: mongoose.Schema.Types.Mixed, default: {} },
     // Payout
-    payoutMethod: { type: String, enum: ['razorpay', 'upi', 'upi_queued', 'simulated'], default: 'simulated' },
+    payoutMethod: { type: String, enum: ['razorpay', 'upi', 'upi_queued', 'simulated', 'pool_insufficient'], default: 'simulated' },
     payoutId: String,
     payoutStatus: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], default: 'pending' },
     payoutTimestamp: Date,
+    upiId: String,
     // Web3 / Blockchain verification
     txHash: { type: String, default: null },
     // Trigger
@@ -192,11 +193,18 @@ const userSchema = new mongoose.Schema(
       paymentId: String,
       orderId: String,
       verifiedAt: Date,
+      coverageStartsAt: Date, // 48-hour lockout: coverage activates 48h after payment
     },
+    upiId: { type: String, default: null },   // e.g. "pranitha@okicici"
     policyActive: { type: Boolean, default: false },
     isWorking: { type: Boolean, default: false },
     lastPingTime: { type: Date, default: null },
     city: { type: String, default: '' },
+    lastKnownLocation: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      updatedAt: { type: Date, default: null },
+    },
     
     // Disruption State
     activeDisruption: { type: mongoose.Schema.Types.Mixed, default: null },

@@ -12,7 +12,7 @@ mongoose.connect(process.env.MONGODB_URI)
       fullName: 'Aasara Admin',
       email: 'admin@aasara.ai',
       password: hashedPassword,
-      phoneNumber: '0000000000',
+      phoneNumber: '9000000001',
       role: 'admin',
       city: 'Hyderabad',
       policyActive: false,

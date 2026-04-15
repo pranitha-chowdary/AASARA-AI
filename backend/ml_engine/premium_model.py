@@ -1,6 +1,6 @@
 """
 AASARA ML Engine — Premium Pricing Model (Two-Tier Plans)
-Gradient Boosted Decision Tree (scikit-learn) for dynamic premium calculation
+XGBoost Regressor for dynamic premium calculation
 based on multi-factor risk analysis.
 
 Plan Tiers:
@@ -8,7 +8,7 @@ Plan Tiers:
   - Total Guard:  ₹39-₹59/week (₹6-₹9/day) — Full coverage with bonus perks
 """
 import numpy as np
-from sklearn.ensemble import GradientBoostingRegressor
+from xgboost import XGBRegressor
 from sklearn.preprocessing import StandardScaler
 
 # ============================================================
@@ -112,7 +112,7 @@ def _generate_training_data(plan_type='basic'):
 
 class AasaraPremiumModel:
     """
-    Dual Gradient Boosted Decision Tree models for two-tier pricing.
+    Dual XGBoost Regressor models for two-tier pricing.
     """
 
     FEATURE_NAMES = [
@@ -132,21 +132,24 @@ class AasaraPremiumModel:
         self._train()
 
     def _train(self):
-        """Train separate models for each plan tier."""
+        """Train separate XGBoost models for each plan tier."""
         for plan_type in ['basic', 'premium']:
-            print(f"[PremiumModel] Training {plan_type.upper()} tier model...")
+            print(f"[PremiumModel] Training {plan_type.upper()} tier XGBoost model...")
             X, y = _generate_training_data(plan_type)
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
 
-            model = GradientBoostingRegressor(
+            model = XGBRegressor(
                 n_estimators=200,
                 max_depth=5,
                 learning_rate=0.1,
-                min_samples_split=10,
-                min_samples_leaf=5,
+                min_child_weight=5,
                 subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.1,
+                reg_lambda=1.0,
                 random_state=42,
+                verbosity=0,
             )
             model.fit(X_scaled, y)
 
@@ -154,7 +157,7 @@ class AasaraPremiumModel:
             self.scalers[plan_type] = scaler
 
             score = model.score(X_scaled, y)
-            print(f"[PremiumModel] ✅ {plan_type.upper()} model — R² score: {score:.4f}")
+            print(f"[PremiumModel] ✅ {plan_type.upper()} XGBoost model — R² score: {score:.4f}")
 
         self.is_trained = True
         print(f"[PremiumModel] Feature importances (basic): {dict(zip(self.FEATURE_NAMES, [round(f, 3) for f in self.models['basic'].feature_importances_]))}")
@@ -184,11 +187,19 @@ class AasaraPremiumModel:
         predicted_daily = float(model.predict(features_scaled)[0])
         predicted_daily = round(max(tier['min_daily'], min(tier['max_daily'], predicted_daily)), 2)
 
-        # Confidence interval
-        staged_predictions = list(model.staged_predict(features_scaled))
-        if len(staged_predictions) > 10:
-            recent_preds = [float(p[0]) for p in staged_predictions[-50:]]
-            std_dev = float(np.std(recent_preds))
+        # Confidence interval via bootstrap-style estimation from tree ensemble
+        # XGBoost doesn't have staged_predict, so we use prediction margin
+        booster = model.get_booster()
+        import xgboost as xgb
+        dmat = xgb.DMatrix(features_scaled, feature_names=self.FEATURE_NAMES)
+        # Get predictions from subsets of trees for variance estimation
+        ntrees = model.n_estimators
+        subset_preds = []
+        for end in range(max(10, ntrees - 50), ntrees + 1, 5):
+            p = float(booster.predict(dmat, iteration_range=(0, end))[0])
+            subset_preds.append(p)
+        if len(subset_preds) > 2:
+            std_dev = float(np.std(subset_preds))
             confidence = max(0.6, min(0.98, 1.0 - std_dev / 5))
         else:
             confidence = 0.85
@@ -276,7 +287,7 @@ class AasaraPremiumModel:
                 '🟡 Moderate' if predicted_daily > (tier['max_daily'] * 0.5) else
                 '🟢 Low Risk'
             ),
-            'model_version': '2.0.0-dual-gbdt',
+            'model_version': '3.0.0-dual-xgboost',
         }
 
     def predict_both_plans(self, weather_risk, traffic_risk, disruption_prob,

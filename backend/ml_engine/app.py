@@ -54,6 +54,7 @@ def health():
             'POST /api/ml/fraud-check',
             'POST /api/ml/verify-photo',
             'POST /api/ml/trigger-scan',
+            'POST /api/ml/aqi',
             'POST /api/ml/platform-telemetry',
         ]
     })
@@ -264,6 +265,53 @@ def platform_telemetry():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/ml/aqi', methods=['POST'])
+def get_aqi():
+    """Fetch real-time AQI from WAQI for a given location."""
+    try:
+        import requests as _req
+        data = request.json or {}
+        lat = data.get('lat', 28.6139)  # Default: Delhi
+        lng = data.get('lng', 77.2090)
+        city = data.get('city')  # Optional: search by city name instead
+
+        waqi_token = os.getenv('WAQI_API_TOKEN', '')
+        if not waqi_token:
+            return jsonify({'error': 'WAQI_API_TOKEN not configured'}), 500
+
+        if city:
+            waqi_url = f"https://api.waqi.info/feed/{city}/?token={waqi_token}"
+        else:
+            waqi_url = f"https://api.waqi.info/feed/geo:{lat};{lng}/?token={waqi_token}"
+
+        resp = _req.get(waqi_url, timeout=10).json()
+        if resp.get('status') != 'ok':
+            return jsonify({'error': f"WAQI API error: {resp.get('data', 'unknown')}"}), 502
+
+        d = resp['data']
+        aqi = int(d.get('aqi', 0))
+
+        if aqi > 300: level = 'Hazardous'
+        elif aqi > 200: level = 'Very Unhealthy'
+        elif aqi > 150: level = 'Unhealthy'
+        elif aqi > 100: level = 'Unhealthy for Sensitive Groups'
+        elif aqi > 50: level = 'Moderate'
+        else: level = 'Good'
+
+        return jsonify({
+            'aqi': aqi,
+            'level': level,
+            'station': d.get('city', {}).get('name', 'Unknown'),
+            'dominant_pollutant': d.get('dominentpol', 'pm25'),
+            'pollutants': {k: v.get('v') for k, v in d.get('iaqi', {}).items()},
+            'time': d.get('time', {}).get('s', ''),
+            'source': 'WAQI (World Air Quality Index)',
+            'trigger_active': aqi > 300,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/ml/trigger-scan', methods=['POST'])
 def trigger_scan():
     """
@@ -318,21 +366,70 @@ def trigger_scan():
         except:
             triggers.append({'id': 'heatwave', 'name': ' Heatwave', 'active': False, 'error': 'No data'})
 
-        # Trigger 3: Severe Pollution (Simulated AQI)
-        import random, hashlib
-        random.seed(int(hashlib.md5(f"{lat}{lng}{datetime.now().hour}".encode()).hexdigest()[:8], 16))
-        aqi = random.randint(50, 180)  # Simulate  occasionally dangerous
-        if datetime.now().month in [10, 11, 12, 1]:  # Winter = worse AQI
-            aqi += random.randint(50, 150)
-        is_pollution_trigger = aqi > 300
-        triggers.append({
-            'id': 'pollution',
-            'name': ' Severe Pollution',
-            'source': 'AQI Monitor (Simulated)',
-            'active': is_pollution_trigger,
-            'severity': min(5, int((aqi - 300) / 50) + 3) if is_pollution_trigger else 0,
-            'data': {'aqi': aqi, 'level': 'Hazardous' if aqi > 300 else 'Unhealthy' if aqi > 150 else 'Moderate'},
-        })
+        # Trigger 3: Severe Pollution — WAQI (World Air Quality Index) REAL API
+        try:
+            import requests as _req
+            waqi_token = os.getenv('WAQI_API_TOKEN', '')
+            waqi_url = f"https://api.waqi.info/feed/geo:{lat};{lng}/?token={waqi_token}"
+            waqi_resp = _req.get(waqi_url, timeout=10).json()
+
+            if waqi_resp.get('status') == 'ok':
+                waqi_data = waqi_resp['data']
+                aqi = int(waqi_data.get('aqi', 0))
+                station_name = waqi_data.get('city', {}).get('name', 'Unknown Station')
+                dominentpol = waqi_data.get('dominentpol', 'pm25')
+                iaqi = waqi_data.get('iaqi', {})
+                aqi_source = f"WAQI — {station_name}"
+                print(f"[WAQI] AQI={aqi} from {station_name} (dominant: {dominentpol})")
+            else:
+                raise ValueError(f"WAQI API error: {waqi_resp.get('data', 'unknown')}")
+
+            is_pollution_trigger = aqi > 300
+
+            # Map AQI ranges to human-readable levels
+            if aqi > 300:
+                aqi_level = 'Hazardous'
+            elif aqi > 200:
+                aqi_level = 'Very Unhealthy'
+            elif aqi > 150:
+                aqi_level = 'Unhealthy'
+            elif aqi > 100:
+                aqi_level = 'Unhealthy for Sensitive Groups'
+            elif aqi > 50:
+                aqi_level = 'Moderate'
+            else:
+                aqi_level = 'Good'
+
+            triggers.append({
+                'id': 'pollution',
+                'name': '🏭 Severe Pollution',
+                'source': aqi_source,
+                'active': is_pollution_trigger,
+                'severity': min(5, int((aqi - 300) / 50) + 3) if is_pollution_trigger else 0,
+                'data': {
+                    'aqi': aqi,
+                    'level': aqi_level,
+                    'station': station_name,
+                    'dominant_pollutant': dominentpol,
+                    'pollutants': {k: v.get('v') for k, v in iaqi.items()},
+                },
+            })
+        except Exception as e:
+            print(f"[WAQI] Error: {e} — falling back to simulated AQI")
+            import random, hashlib
+            random.seed(int(hashlib.md5(f"{lat}{lng}{datetime.now().hour}".encode()).hexdigest()[:8], 16))
+            aqi = random.randint(50, 180)
+            if datetime.now().month in [10, 11, 12, 1]:
+                aqi += random.randint(50, 150)
+            is_pollution_trigger = aqi > 300
+            triggers.append({
+                'id': 'pollution',
+                'name': '🏭 Severe Pollution',
+                'source': 'AQI Monitor (Simulated — WAQI fallback)',
+                'active': is_pollution_trigger,
+                'severity': min(5, int((aqi - 300) / 50) + 3) if is_pollution_trigger else 0,
+                'data': {'aqi': aqi, 'level': 'Hazardous' if aqi > 300 else 'Unhealthy' if aqi > 150 else 'Moderate'},
+            })
 
         # Trigger 4: Curfew / Bandh  NewsData.io (REAL)
         try:
@@ -456,7 +553,7 @@ def verify_photo():
 
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', os.getenv('ML_ENGINE_PORT', 5002)))
+    port = int(os.getenv('ML_ENGINE_PORT', 5002))
     print(f"\n AASARA ML Engine starting on port {port}")
     print(f" OpenWeatherMap API: {'Configured' if os.getenv('OPENWEATHERMAP_API_KEY') else 'Using default key'}")
     print(f" Model: Dual GBDT v2.0 + Fraud Engine v1.0")

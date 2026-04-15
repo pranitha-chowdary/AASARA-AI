@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { io, Socket } from 'socket.io-client';
 import {
   Power,
   CheckCircle2,
@@ -21,12 +22,15 @@ import { useAuth } from '../contexts/AuthContext';
 const GATEWAY_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export function RealTimeDashboard() {
-  const { workerProfile } = useAuth();
+  const { workerProfile, user } = useAuth();
   
   // State
   const [isOnline, setIsOnline] = useState(false);
   const [premium, setPremium] = useState(0);
-  const [riskTier, setRiskTier] = useState('🟡 Moderate');
+  const [riskTier, setRiskTier] = useState('Moderate');
+  const [platform, setPlatform] = useState('');
+  const [lockoutError, setLockoutError] = useState('');
+  const [showClaims, setShowClaims] = useState(false);
   const [activeDisruption, setActiveDisruption] = useState<any>(null);
   const [claimsHistory, setClaimsHistory] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -46,6 +50,11 @@ export function RealTimeDashboard() {
   const [error, setError] = useState('');
   const [mockResult, setMockResult] = useState<'pass' | 'fail'>('pass');
 
+  // Socket.io real-time pipeline events
+  const socketRef = useRef<Socket | null>(null);
+  const [pipelineEvents, setPipelineEvents] = useState<any[]>([]);
+  const [socketConnected, setSocketConnected] = useState(false);
+
   // Load data on mount
   useEffect(() => {
     loadSubscription();
@@ -62,16 +71,83 @@ export function RealTimeDashboard() {
     return () => clearInterval(interval);
   }, [workerProfile]);
 
-  // Heartbeat: POST every 3 minutes when online
+  // Socket.io — real-time pipeline events
+  useEffect(() => {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+
+    const socket = io(GATEWAY_URL, {
+      auth: { token },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 2000,
+    });
+
+    socket.on('connect', () => {
+      console.log('🔌 Socket.io connected');
+      setSocketConnected(true);
+    });
+
+    socket.on('disconnect', () => {
+      setSocketConnected(false);
+    });
+
+    socket.on('pipeline:stage', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+    });
+
+    socket.on('pipeline:complete', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'complete', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+      // Refresh data immediately when pipeline completes
+      checkActiveDisruption();
+      fetchClaimsHistory();
+      fetchNotifications();
+    });
+
+    socket.on('payout:status', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'webhook_confirmation', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+      fetchClaimsHistory();
+      fetchNotifications();
+    });
+
+    socket.on('payment:confirmed', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'payment_captured', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+      fetchNotifications();
+    });
+
+    socket.on('payment:failed', (data: any) => {
+      setPipelineEvents(prev => [{ ...data, stage: 'payment_failed', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+      fetchNotifications();
+    });
+
+    socketRef.current = socket;
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, []);
+
+  // Heartbeat: POST every 3 minutes when online — includes live GPS
   useEffect(() => {
     if (isOnline) {
       setHeartbeatActive(true);
       const sendHeartbeat = async () => {
         try {
           const token = localStorage.getItem('authToken');
+          // Get current GPS position
+          let lat: number | undefined, lng: number | undefined;
+          try {
+            const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+              navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 8000 })
+            );
+            lat = pos.coords.latitude;
+            lng = pos.coords.longitude;
+          } catch {}
           await fetch(`${GATEWAY_URL}/api/heartbeat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ lat, lng }),
           });
           setLastPingAgo('just now');
         } catch (e) { console.error('Heartbeat error', e); }
@@ -99,7 +175,9 @@ export function RealTimeDashboard() {
         const data = await res.json();
         if (data.subscription) {
           setPremium(data.subscription.amount || 0);
-          setRiskTier(data.subscription.riskTier || '🟡 Moderate');
+          const tier = (data.subscription.riskTier || 'Moderate').replace(/^[🟢🟡🔴⚪]\s*/, '');
+          setRiskTier(tier);
+          setPlatform(data.subscription.platform || '');
         }
       }
     } catch (e) { console.error('Subscription load error', e); }
@@ -256,6 +334,7 @@ export function RealTimeDashboard() {
 
   const toggleShift = async () => {
     const newStatus = !isOnline;
+    setLockoutError('');
     try {
       const res = await fetch(`${GATEWAY_URL}/api/shifts/toggle-status`, {
         method: 'POST',
@@ -264,6 +343,13 @@ export function RealTimeDashboard() {
       });
       if (res.ok) {
         setIsOnline(newStatus);
+      } else {
+        const data = await res.json();
+        if (res.status === 403 && data.hoursRemaining) {
+          setLockoutError(`Coverage activates in ${data.hoursRemaining}h. New policies have a 48-hour waiting period.`);
+        } else {
+          setLockoutError(data.error || 'Could not toggle shift.');
+        }
       }
     } catch (e) { console.error('Toggle error', e); }
   };
@@ -278,11 +364,21 @@ export function RealTimeDashboard() {
     } catch (e) { /* silent */ }
   };
 
+  // Dismissed disruption cards
+  const [dismissedWarning, setDismissedWarning] = useState(false);
+  const [dismissedReceipt, setDismissedReceipt] = useState(false);
+
+  // Reset dismissed state when disruption changes
+  useEffect(() => {
+    setDismissedWarning(false);
+    setDismissedReceipt(false);
+  }, [activeDisruption?._id]);
+
   // Get notification icon color
   const getNotifStyle = (type: string) => {
     switch (type) {
-      case 'weather_warning': return { bg: 'bg-red-50', border: 'border-red-200', icon: '🔴', color: 'text-red-700' };
-      case 'upi_receipt': return { bg: 'bg-green-50', border: 'border-green-200', icon: '💚', color: 'text-green-700' };
+      case 'weather_warning': return { bg: 'bg-teal-50', border: 'border-teal-200', icon: '⚠️', color: 'text-teal-700' };
+      case 'upi_receipt': return { bg: 'bg-emerald-50', border: 'border-emerald-200', icon: '💚', color: 'text-emerald-700' };
       case 'sms_sent': return { bg: 'bg-blue-50', border: 'border-blue-200', icon: '📱', color: 'text-blue-700' };
       default: return { bg: 'bg-slate-50', border: 'border-slate-200', icon: '🔔', color: 'text-slate-700' };
     }
@@ -295,7 +391,7 @@ export function RealTimeDashboard() {
         {/* ====== HEADER with Notification Bell ====== */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Gig Worker Dashboard</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Welcome, {user?.fullName || 'Worker'} !</h1>
             <p className="text-slate-500 text-sm">AASARA Parametric Safety Net</p>
           </div>
           <div className="relative">
@@ -305,7 +401,7 @@ export function RealTimeDashboard() {
             >
               <Bell className="w-5 h-5 text-slate-500" />
               {unreadCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold animate-pulse shadow-sm">
+                <span className="absolute -top-1 -right-1 w-5 h-5 bg-[#254B85] text-white text-xs rounded-full flex items-center justify-center font-bold animate-pulse shadow-sm">
                   {unreadCount}
                 </span>
               )}
@@ -366,72 +462,97 @@ export function RealTimeDashboard() {
           </div>
         </motion.div>
 
-        {/* ====== WEATHER WARNING + UPI RECEIPT (Real-time from Admin) ====== */}
+        {/* ====== DETECTED TRIGGERS (Real-time from Admin) ====== */}
         <AnimatePresence>
           {activeDisruption && (
             <div className="space-y-3">
-              {/* 🔴 SEVERE WEATHER WARNING */}
+              {/* ⚠️ DISRUPTION DETECTED — Teal/Navy theme */}
+              {!dismissedWarning && (
               <motion.div
-                initial={{ opacity: 0, x: -50, scale: 0.9 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: -50 }}
-                transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                className="bg-gradient-to-r from-red-50 to-red-100 border-2 border-red-300 rounded-xl p-5 relative overflow-hidden shadow-md"
+                initial={{ opacity: 0, y: -12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                className="bg-gradient-to-br from-slate-50 via-cyan-50/60 to-teal-50 border border-teal-200/80 rounded-2xl p-5 relative overflow-hidden shadow-sm"
               >
-                {/* Animated flashing border */}
-                <div className="absolute inset-0 border-2 border-red-400 rounded-xl animate-pulse opacity-40" />
+                {/* Subtle left accent bar */}
+                <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-[#38C7D2] to-[#254B85] rounded-l-2xl" />
                 
                 <div className="flex items-start gap-4 relative z-10">
-                  <div className="w-12 h-12 bg-red-200 rounded-full flex items-center justify-center flex-shrink-0 animate-pulse">
-                    <CloudRain className="w-7 h-7 text-red-600" />
+                  <div className="w-11 h-11 bg-teal-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                    <CloudRain className="w-6 h-6 text-teal-600" />
                   </div>
                   <div className="flex-1">
-                    <p className="text-red-700 font-black text-lg tracking-wide">
-                      🔴 {activeDisruption.eventLabel || 'SEVERE WEATHER WARNING'}
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#254B85]/10 text-[#254B85] rounded-md text-[10px] font-bold uppercase tracking-wider">
+                        <Zap className="w-3 h-3" /> Detected Trigger
+                      </span>
+                    </div>
+                    <p className="text-[#1A3668] font-bold text-base">
+                      {activeDisruption.eventLabel || 'Weather Disruption Detected'}
                     </p>
-                    <p className="text-red-600 text-sm mt-1">
-                      Severe <strong className="text-slate-900">{activeDisruption.eventType?.toUpperCase()}</strong> detected in your operational zone. Income disruption identified by AASARA AI Engine.
+                    <p className="text-slate-500 text-sm mt-1">
+                      <strong className="text-slate-700">{activeDisruption.eventType?.toUpperCase()}</strong> disruption detected in your zone. AASARA AI has initiated the payout pipeline.
                     </p>
-                    <div className="flex items-center gap-4 mt-3 text-xs text-red-600">
-                      <span>Severity: <strong className="text-slate-900">Level {activeDisruption.severity || 3}/5</strong></span>
-                      <span>•</span>
-                      <span>Triggered: {new Date(activeDisruption.triggeredAt).toLocaleTimeString()}</span>
+                    <div className="flex items-center gap-3 mt-3 text-xs text-slate-500">
+                      <span className="flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
+                        Severity: <strong className="text-[#254B85]">Level {activeDisruption.severity || 3}/5</strong>
+                      </span>
+                      <span className="text-slate-300">|</span>
+                      <span>{new Date(activeDisruption.triggeredAt).toLocaleTimeString()}</span>
                       {activeDisruption.flow === 'B' && (
                         <>
-                          <span>•</span>
-                          <span className="bg-red-200 text-red-800 px-2 py-0.5 rounded-full font-bold">📱 SMS Sent</span>
+                          <span className="text-slate-300">|</span>
+                          <span className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded-md font-semibold">📱 SMS Sent</span>
                         </>
                       )}
                     </div>
                   </div>
+                  <button
+                    onClick={() => setDismissedWarning(true)}
+                    className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600 flex-shrink-0"
+                    title="Dismiss"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </motion.div>
+              )}
 
-              {/* 🟢 UPI PAYOUT RECEIPT (if paid) */}
-              {activeDisruption.status === 'paid' && (
+              {/* ✅ PAYOUT RECEIPT (if paid) */}
+              {activeDisruption.status === 'paid' && !dismissedReceipt && (
                 <motion.div
-                  initial={{ opacity: 0, x: 50, scale: 0.9 }}
-                  animate={{ opacity: 1, x: 0, scale: 1 }}
-                  exit={{ opacity: 0, x: 50 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 25, delay: 0.8 }}
-                  className="bg-gradient-to-r from-green-50 to-emerald-100 border-2 border-green-400 rounded-xl p-5 shadow-md"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 12 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28, delay: 0.3 }}
+                  className="bg-gradient-to-br from-emerald-50/80 via-white to-teal-50/50 border border-emerald-200/80 rounded-2xl p-5 shadow-sm relative"
                 >
+                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-emerald-400 to-teal-500 rounded-l-2xl" />
+
                   <div className="flex items-start gap-4">
-                    <div className="w-12 h-12 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0">
-                      <CreditCard className="w-7 h-7 text-green-600" />
+                    <div className="w-11 h-11 bg-emerald-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                      <CreditCard className="w-6 h-6 text-emerald-600" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-green-700 font-black text-lg tracking-wide">💚 UPI PAYOUT RECEIPT</p>
-                      <div className="bg-white border border-green-200 rounded-lg p-3 mt-2">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-md text-[10px] font-bold uppercase tracking-wider">
+                          ✓ Payout Completed
+                        </span>
+                      </div>
+                      <p className="text-emerald-800 font-bold text-base">UPI Payout Receipt</p>
+                      <div className="bg-white/80 border border-emerald-100 rounded-xl p-4 mt-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-green-700 text-sm">Amount Credited</span>
-                          <span className="text-green-700 text-3xl font-black">₹{activeDisruption.claimAmount || 700}</span>
+                          <span className="text-slate-500 text-sm">Amount Credited</span>
+                          <span className="text-emerald-700 text-3xl font-extrabold">₹{activeDisruption.claimAmount || 700}</span>
                         </div>
-                        <div className="border-t border-green-200 mt-2 pt-2 text-xs text-green-700/80 space-y-0.5">
-                          <p>Method: <strong className="text-green-600">UPI Instant Transfer</strong></p>
-                          <p>Transaction ID: <strong className="text-green-600">txn_{Date.now().toString().slice(-8)}</strong></p>
-                          <p>Processed by: <strong className="text-green-600">AASARA Zero-Trust ML Engine</strong></p>
-                          <p>Flow: <strong className="text-green-600">{activeDisruption.flow === 'B' ? 'Last Known State (Offline)' : 'Real-Time (Online)'}</strong></p>
+                        <div className="border-t border-emerald-100 mt-3 pt-3 text-xs text-slate-500 space-y-1">
+                          <p>Method: <strong className="text-slate-700">UPI Instant Transfer</strong></p>
+                          <p>Source: <strong className="text-slate-700">Community Liquidity Pool</strong></p>
+                          <p>Transaction: <strong className="text-slate-700">txn_{Date.now().toString().slice(-8)}</strong></p>
+                          <p>Engine: <strong className="text-slate-700">AASARA Payout Engine → Razorpay</strong></p>
+                          <p>Flow: <strong className="text-slate-700">{activeDisruption.flow === 'B' ? 'Last Known State (Offline)' : 'Real-Time (Online)'}</strong></p>
                         </div>
                         {activeDisruption.txHash && (
                           <div className="mt-3">
@@ -439,15 +560,22 @@ export function RealTimeDashboard() {
                               href={`https://amoy.polygonscan.com/tx/${activeDisruption.txHash}`} 
                               target="_blank" 
                               rel="noopener noreferrer"
-                              className="flex items-center justify-center gap-2 w-full py-2 bg-slate-900 border border-slate-700 text-teal-400 hover:text-teal-300 rounded-lg text-xs font-bold transition-all hover:bg-slate-800"
+                              className="flex items-center justify-center gap-2 w-full py-2 bg-[#254B85] border border-[#1A3668] text-teal-300 hover:text-white rounded-lg text-xs font-bold transition-all hover:bg-[#1A3668]"
                             >
                               <ExternalLink className="w-3.5 h-3.5" />
-                              View Payout on PolygonScan
+                              View on PolygonScan
                             </a>
                           </div>
                         )}
                       </div>
                     </div>
+                    <button
+                      onClick={() => setDismissedReceipt(true)}
+                      className="p-1.5 rounded-lg hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600 flex-shrink-0"
+                      title="Dismiss receipt"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
                   </div>
                 </motion.div>
               )}
@@ -455,17 +583,25 @@ export function RealTimeDashboard() {
               {/* Micro-verify (Standard) */}
               {(activeDisruption.status === 'micro_verify' && activeDisruption.flow !== 'syndicate_attack') && (
                 <motion.div
-                  initial={{ opacity: 0, y: 20 }}
+                  initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.5 }}
-                  className="bg-amber-50 border-2 border-amber-300 rounded-xl p-5 shadow-md"
+                  transition={{ delay: 0.3 }}
+                  className="bg-gradient-to-br from-amber-50/60 via-white to-orange-50/30 border border-amber-200/80 rounded-2xl p-5 shadow-sm relative"
                 >
+                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-amber-400 to-orange-400 rounded-l-2xl" />
                   <div className="flex items-start gap-4">
-                    <ShieldAlert className="w-8 h-8 text-amber-500 animate-pulse flex-shrink-0" />
+                    <div className="w-11 h-11 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                      <ShieldAlert className="w-6 h-6 text-amber-600" />
+                    </div>
                     <div className="flex-1">
-                      <p className="text-amber-700 font-bold text-lg">📸 VERIFICATION REQUIRED</p>
-                      <p className="text-slate-600 text-sm mt-1">Our ML engine detected an anomaly. Upload a timestamped photo to proceed with your ₹{activeDisruption.claimAmount} claim.</p>
-                      <button className="mt-3 w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-sm shadow-sm transition-colors">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded-md text-[10px] font-bold uppercase tracking-wider">
+                          Verification Needed
+                        </span>
+                      </div>
+                      <p className="text-amber-800 font-bold text-base">Identity Verification Required</p>
+                      <p className="text-slate-500 text-sm mt-1">Our ML engine flagged an anomaly. Upload a timestamped photo to proceed with your ₹{activeDisruption.claimAmount} claim.</p>
+                      <button className="mt-3 w-full py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl font-bold text-sm shadow-sm transition-colors">
                         Upload Photo Evidence
                       </button>
                     </div>
@@ -473,23 +609,29 @@ export function RealTimeDashboard() {
                 </motion.div>
               )}
 
-              {/* 🔴 SYNDICATE ATTACK / FROZEN ANOMALY */}
+              {/* 🔒 FROZEN ANOMALY / SYNDICATE */}
               {activeDisruption.status === 'Frozen_Anomaly' && (
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="bg-red-50 border-2 border-red-500 rounded-xl p-5 shadow-md relative overflow-hidden"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-gradient-to-br from-slate-50 via-white to-[#254B85]/5 border border-[#254B85]/20 rounded-2xl p-5 shadow-sm relative overflow-hidden"
                 >
-                  <div className="absolute inset-0 bg-red-500/10 animate-pulse pointer-events-none" />
+                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-[#254B85] to-[#38C7D2] rounded-l-2xl" />
                   <div className="flex items-start gap-4 relative z-10">
-                    <ShieldAlert className="w-8 h-8 text-red-600 animate-bounce flex-shrink-0" />
+                    <div className="w-11 h-11 bg-[#254B85]/10 rounded-xl flex items-center justify-center flex-shrink-0">
+                      <ShieldAlert className="w-6 h-6 text-[#254B85]" />
+                    </div>
                     <div className="flex-1">
-                      <p className="text-red-700 font-extrabold text-lg">SECURITY ALERT: Network Anomaly Detected</p>
-                      <p className="text-red-900 text-sm mt-1 font-bold">Auto-payout paused by Zero-Trust Engine.</p>
-                      <p className="text-red-700/80 text-xs mt-2 font-medium">To protect your account and the community liquidity pool, please complete a micro-verification.</p>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#254B85]/10 text-[#254B85] rounded-md text-[10px] font-bold uppercase tracking-wider">
+                          🔒 Security Review
+                        </span>
+                      </div>
+                      <p className="text-[#1A3668] font-bold text-base">Network Anomaly Detected</p>
+                      <p className="text-slate-500 text-sm mt-1">Auto-payout paused by Zero-Trust Engine. Complete a quick verification to release your funds.</p>
                       <button 
                         onClick={() => setShowMicroVerify(true)}
-                        className="mt-4 w-full py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold text-sm shadow-sm transition-colors"
+                        className="mt-3 w-full py-2.5 bg-gradient-to-r from-[#254B85] to-[#1A3668] hover:from-[#1A3668] hover:to-[#0f2440] text-white rounded-xl font-bold text-sm shadow-sm transition-colors"
                       >
                         Start Micro-Verification
                       </button>
@@ -501,24 +643,34 @@ export function RealTimeDashboard() {
           )}
         </AnimatePresence>
 
-        {/* ====== MOCK GIG PLATFORM WIDGET + SHIFT STATUS ====== */}
+        {/* ====== PLATFORM & SHIFT STATUS ====== */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           
-          {/* Mock Gig Platform Widget (Zomato Style) */}
+          {/* Platform Widget */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl p-5 relative overflow-hidden shadow-sm"
           >
-            {/* Faux platform branding */}
+            {/* Platform branding */}
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center shadow-sm">
-                  <span className="text-white font-black text-xs">Z</span>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-sm ${
+                  platform?.toLowerCase() === 'swiggy' ? 'bg-orange-500' :
+                  platform?.toLowerCase() === 'zomato' ? 'bg-red-500' :
+                  platform?.toLowerCase() === 'uber' ? 'bg-black' :
+                  platform?.toLowerCase() === 'ola' ? 'bg-green-600' :
+                  platform?.toLowerCase() === 'rapido' ? 'bg-yellow-500' :
+                  platform?.toLowerCase() === 'zepto' ? 'bg-purple-600' :
+                  platform?.toLowerCase() === 'blinkit' ? 'bg-yellow-400' :
+                  platform?.toLowerCase() === 'dunzo' ? 'bg-green-500' :
+                  'bg-teal-600'
+                }`}>
+                  <span className="text-white font-black text-xs">{(platform || 'G')[0].toUpperCase()}</span>
                 </div>
                 <div>
-                  <p className="text-slate-900 font-bold text-sm">Mock Gig Platform</p>
-                  <p className="text-slate-500 text-xs">{workerProfile?.platform || 'Zomato'} Delivery Partner</p>
+                  <p className="text-slate-900 font-bold text-sm">{platform || 'Gig Platform'}</p>
+                  <p className="text-slate-500 text-xs">Delivery Partner</p>
                 </div>
               </div>
               {isOnline && heartbeatActive && (
@@ -529,19 +681,27 @@ export function RealTimeDashboard() {
               )}
             </div>
 
-            {/* Big Toggle */}
+            {/* Shift Toggle */}
             <div className="text-center py-4">
-              <p className="text-5xl font-black text-slate-900 mb-3">
-                {isOnline ? '🟢' : '🔴'}
-              </p>
+              <div className={`w-16 h-16 mx-auto mb-3 rounded-full flex items-center justify-center ${
+                isOnline ? 'bg-emerald-50 border-2 border-emerald-200' : 'bg-slate-100 border-2 border-slate-200'
+              }`}>
+                <Power className={`w-7 h-7 ${isOnline ? 'text-emerald-500' : 'text-slate-400'}`} />
+              </div>
               <p className="text-slate-900 font-bold text-xl mb-1">
                 {isOnline ? 'Online' : 'Offline'}
               </p>
               <p className="text-slate-500 text-xs mb-4">
                 {isOnline 
                   ? 'Accepting orders • Heartbeat pinging every 3 min' 
-                  : 'Toggle online to start accepting orders'}
+                  : 'Toggle online to start your shift'}
               </p>
+              {lockoutError && (
+                <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-xs flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>{lockoutError}</span>
+                </div>
+              )}
               <button
                 onClick={toggleShift}
                 className={`w-full py-3.5 rounded-xl font-bold text-white text-sm transition-all shadow-md ${
@@ -587,7 +747,14 @@ export function RealTimeDashboard() {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-600 text-sm">Risk Tier</span>
-                <span className="text-slate-800 font-semibold">{riskTier}</span>
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                  riskTier.toLowerCase().includes('low') ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                  riskTier.toLowerCase().includes('high') ? 'bg-red-50 text-red-700 border border-red-200' :
+                  'bg-amber-50 text-amber-700 border border-amber-200'
+                }`}>
+                  <ShieldAlert className="w-3 h-3" />
+                  {riskTier}
+                </span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-600 text-sm">Status</span>
@@ -615,6 +782,63 @@ export function RealTimeDashboard() {
           </motion.div>
         </div>
 
+        {/* ====== REAL-TIME PIPELINE FEED ====== */}
+        {pipelineEvents.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-white/80 backdrop-blur-sm border border-teal-200/60 rounded-xl overflow-hidden shadow-sm"
+          >
+            <div className="p-4 border-b border-teal-200 bg-teal-50">
+              <h3 className="font-bold text-teal-800 flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-teal-500"></span>
+                </span>
+                Live Pipeline Feed
+                {socketConnected && <span className="text-xs font-normal text-teal-600 ml-2">● Connected</span>}
+              </h3>
+            </div>
+            <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+              {pipelineEvents.map((evt) => {
+                const stageConfig: Record<string, { icon: string; color: string; label: string }> = {
+                  trigger_detected: { icon: '🌩️', color: 'text-amber-700 bg-amber-50', label: 'Trigger Detected' },
+                  fraud_check: { icon: '🛡️', color: 'text-blue-700 bg-blue-50', label: 'Fraud Check' },
+                  payout_initiated: { icon: '💸', color: 'text-emerald-700 bg-emerald-50', label: 'Payout Initiated' },
+                  blockchain_logged: { icon: '⛓️', color: 'text-purple-700 bg-purple-50', label: 'Blockchain Logged' },
+                  webhook_confirmation: { icon: '✅', color: 'text-teal-700 bg-teal-50', label: 'Bank Confirmed' },
+                  payment_captured: { icon: '💰', color: 'text-green-700 bg-green-50', label: 'Premium Verified' },
+                  payment_failed: { icon: '❌', color: 'text-red-700 bg-red-50', label: 'Payment Failed' },
+                  complete: { icon: '🎉', color: 'text-emerald-700 bg-emerald-50', label: 'Pipeline Complete' },
+                };
+                const cfg = stageConfig[evt.stage] || { icon: '📡', color: 'text-slate-700 bg-slate-50', label: evt.stage };
+                return (
+                  <div key={evt.id} className="px-4 py-3 flex items-center gap-3 text-sm hover:bg-slate-50 transition">
+                    <span className="text-lg">{cfg.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-bold ${cfg.color}`}>{cfg.label}</span>
+                      <p className="text-slate-600 text-xs mt-0.5 truncate">
+                        {evt.workerName && <span className="font-medium">{evt.workerName}</span>}
+                        {evt.amount && <span> • ₹{evt.amount}</span>}
+                        {evt.fraudVerdict && <span> • Verdict: <strong>{evt.fraudVerdict}</strong></span>}
+                        {evt.fraudScore !== undefined && evt.stage === 'fraud_check' && <span> • Score: {evt.fraudScore}</span>}
+                        {evt.payoutMethod && evt.stage === 'payout_initiated' && <span> • via {evt.payoutMethod}</span>}
+                        {evt.method && evt.stage === 'payment_captured' && <span> • via {evt.method}{evt.vpa ? ` (${evt.vpa})` : ''}</span>}
+                        {evt.errorDesc && evt.stage === 'payment_failed' && <span> • {evt.errorDesc}</span>}
+                        {evt.txHash && <span> • tx: {evt.txHash.slice(0, 10)}…</span>}
+                        {evt.utr && <span> • UTR: {evt.utr}</span>}
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                      {evt.timestamp ? new Date(evt.timestamp).toLocaleTimeString() : ''}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+
         {/* ====== CLAIMS PIPELINE TABLE ====== */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -622,11 +846,18 @@ export function RealTimeDashboard() {
           transition={{ delay: 0.2 }}
           className="bg-white/80 backdrop-blur-sm border border-slate-200/60 rounded-xl overflow-hidden shadow-sm"
         >
-          <div className="p-4 border-b border-slate-200 bg-slate-50">
+          <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
             <h3 className="font-bold text-slate-800 flex items-center gap-2">
               📄 My Claims Pipeline
             </h3>
+            <button
+              onClick={() => setShowClaims(prev => !prev)}
+              className="text-xs text-slate-500 hover:text-slate-700 font-medium transition-colors px-2 py-1 rounded-md hover:bg-slate-100"
+            >
+              {showClaims ? 'Hide Claims' : `Show Claims${claimsHistory.length > 0 ? ` (${claimsHistory.length})` : ''}`}
+            </button>
           </div>
+          {showClaims && (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-600">
@@ -680,6 +911,7 @@ export function RealTimeDashboard() {
               </tbody>
             </table>
           </div>
+          )}
         </motion.div>
 
       </div>
@@ -696,13 +928,13 @@ export function RealTimeDashboard() {
             >
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <ShieldAlert className="w-5 h-5 text-red-600" /> Photo Verification
+                  <ShieldAlert className="w-5 h-5 text-[#254B85]" /> Photo Verification
                 </h3>
                 <div className="flex items-center gap-2">
                     {/* Secret Hackathon Demo Toggle: Clicking the Zap icon flips the result */}
                     <button 
                         onClick={() => setMockResult(prev => prev === 'pass' ? 'fail' : 'pass')}
-                        className={`p-1.5 rounded-md transition-all ${mockResult === 'fail' ? 'bg-red-100 text-red-600 rotate-12' : 'bg-slate-100 text-slate-400 opacity-50'}`}
+                        className={`p-1.5 rounded-md transition-all ${mockResult === 'fail' ? 'bg-amber-100 text-amber-600 rotate-12' : 'bg-slate-100 text-slate-400 opacity-50'}`}
                         title="Secret Demo Toggle: Simulate Failure"
                     >
                         <Zap className="w-3.5 h-3.5" />
@@ -715,8 +947,8 @@ export function RealTimeDashboard() {
 
               {!verifyLoading ? (
                 <div className="space-y-4">
-                  <div className="bg-red-50 text-red-700 p-3 rounded-lg text-xs font-semibold border border-red-200">
-                    Your claim of ₹{activeDisruption?.claimAmount || 700} has been paused due to a network anomaly matching Syndicate spoofing patterns.
+                  <div className="bg-[#254B85]/5 text-[#254B85] p-3 rounded-xl text-xs font-semibold border border-[#254B85]/15">
+                    Your claim of ₹{activeDisruption?.claimAmount || 700} has been paused due to a network anomaly. Complete verification to release funds.
                   </div>
                   
                   {activeDisruption?.livenessChallenge && (
@@ -728,7 +960,7 @@ export function RealTimeDashboard() {
                         {activeDisruption.livenessChallenge}
                       </p>
                       <div className="mt-3 flex items-center justify-center gap-2">
-                        <span className={`font-mono text-xl font-bold ${timeLeft < 10 ? 'text-red-400 animate-pulse' : 'text-slate-300'}`}>
+                        <span className={`font-mono text-xl font-bold ${timeLeft < 10 ? 'text-amber-400 animate-pulse' : 'text-slate-300'}`}>
                           00:{timeLeft < 10 ? `0${timeLeft}` : timeLeft}
                         </span>
                       </div>
@@ -736,15 +968,15 @@ export function RealTimeDashboard() {
                   )}
 
                   {timeLeft === 0 ? (
-                    <div className="text-center p-4 bg-red-50 border border-red-200 rounded-xl">
-                      <p className="text-red-700 font-bold">Time Expired!</p>
-                      <p className="text-red-600 text-xs mt-1">Please close and restart the verification process.</p>
+                    <div className="text-center p-4 bg-slate-50 border border-slate-200 rounded-xl">
+                      <p className="text-[#254B85] font-bold">Time Expired</p>
+                      <p className="text-slate-500 text-xs mt-1">Please close and restart the verification process.</p>
                     </div>
                   ) : error ? (
-                    <div className="text-center p-4 bg-red-50 border border-red-200 rounded-xl">
-                      <AlertTriangle className="w-8 h-8 text-red-500 mx-auto mb-2" />
-                      <p className="text-red-700 font-bold text-sm">{error}</p>
-                      <button onClick={startCamera} className="mt-2 text-xs font-bold text-red-600 underline">Try again</button>
+                    <div className="text-center p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                      <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
+                      <p className="text-amber-700 font-bold text-sm">{error}</p>
+                      <button onClick={startCamera} className="mt-2 text-xs font-bold text-teal-600 underline">Try again</button>
                     </div>
                   ) : (
                     <div className="space-y-4">
@@ -765,7 +997,7 @@ export function RealTimeDashboard() {
                         {/* Hidden canvas used to capture a still frame for EfficientNetB0 analysis */}
                         <canvas ref={canvasRef} style={{ display: 'none' }} />
                         <div className="absolute top-3 right-3 flex gap-2">
-                           <div className="bg-red-500/80 backdrop-blur-md px-2 py-1 rounded-md flex items-center gap-1.5">
+                           <div className="bg-teal-600/80 backdrop-blur-md px-2 py-1 rounded-md flex items-center gap-1.5">
                              <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
                              <span className="text-[10px] font-black text-white uppercase tracking-tighter">Live Feed</span>
                            </div>

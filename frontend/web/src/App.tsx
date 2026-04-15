@@ -4,10 +4,12 @@ import { LoadingScreen } from './components/LoadingScreen';
 import { AuthView } from './components/AuthView';
 import { Dashboard } from './components/Dashboard';
 import { ResetPassword } from './components/ResetPassword';
+import { LandingPage } from './components/LandingPage';
 
 function AppContent() {
   const { user, loading } = useAuth();
   const [initialized, setInitialized] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
 
   useEffect(() => {
     if (!loading) {
@@ -23,11 +25,15 @@ function AppContent() {
     return <LoadingScreen />;
   }
 
-  if (!user) {
-    return <AuthView />;
+  if (user) {
+    return <Dashboard />;
   }
 
-  return <Dashboard />;
+  if (showLanding) {
+    return <LandingPage onGetStarted={() => setShowLanding(false)} />;
+  }
+
+  return <AuthView />;
 }
 
 function App() {

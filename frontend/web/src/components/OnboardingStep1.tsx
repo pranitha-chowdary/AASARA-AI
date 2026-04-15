@@ -17,6 +17,8 @@ interface OnboardingStep1Props {
 export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
   const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
   const [platformCode, setPlatformCode] = useState('');
+  const [upiId, setUpiId] = useState('');
+  const [upiError, setUpiError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -33,6 +35,16 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
     e.preventDefault();
     if (!selectedPlatform || !user) return;
 
+    // Validate UPI ID if provided
+    if (upiId) {
+      const upiRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/;
+      if (!upiRegex.test(upiId)) {
+        setUpiError('Invalid UPI ID format. Example: yourname@okicici');
+        return;
+      }
+      setUpiError(null);
+    }
+
     setLoading(true);
     setError(null);
 
@@ -47,6 +59,7 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
         body: JSON.stringify({
           platform: selectedPlatform,
           platformCode: platformCode || null,
+          upiId: upiId || null,
         }),
       });
 
@@ -161,6 +174,37 @@ export function OnboardingStep1({ onComplete }: OnboardingStep1Props) {
           />
           <p className="text-xs text-slate-500">
             You can find this in your partner app settings or leave blank if unsure
+          </p>
+        </motion.div>
+      )}
+
+      {/* UPI ID Input — for payouts */}
+      {selectedPlatform && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-3"
+        >
+          <label className="block text-sm font-medium text-slate-700">
+            UPI ID for Payouts <span className="text-red-500">*</span>
+          </label>
+          <input
+            type="text"
+            value={upiId}
+            onChange={(e) => {
+              setUpiId(e.target.value.toLowerCase().trim());
+              setUpiError(null);
+            }}
+            placeholder="yourname@okicici, yourname@paytm, etc."
+            className={`w-full px-4 py-3 bg-white border rounded-lg text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 shadow-sm ${
+              upiError ? 'border-red-400 focus:ring-red-400' : 'border-slate-300 focus:ring-teal-500'
+            }`}
+          />
+          {upiError && (
+            <p className="text-xs text-red-500">{upiError}</p>
+          )}
+          <p className="text-xs text-slate-500">
+            Your disruption payouts will be sent to this UPI ID from the community liquidity pool
           </p>
         </motion.div>
       )}

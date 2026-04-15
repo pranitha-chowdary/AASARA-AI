@@ -8,543 +8,303 @@ import {
   ActivityIndicator,
   StyleSheet,
   SafeAreaView,
-  ImageBackground,
+  KeyboardAvoidingView,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { apiService } from '../services/api';
 
-type Tab = 'worker_signup' | 'worker_signin' | 'admin';
+type AuthTab = 'worker' | 'admin';
+type WorkerMode = 'signup' | 'login' | 'forgot-password';
 
 const LoginScreen: React.FC = () => {
   const { workerSignUp, workerSignIn, adminLogin, loading } = useAuth();
-  const [activeTab, setActiveTab] = useState<Tab>('worker_signin');
+  const [activeTab, setActiveTab] = useState<AuthTab>('worker');
+  const [workerMode, setWorkerMode] = useState<WorkerMode>('login');
 
-  // Worker signup
-  const [signupEmail, setSignupEmail] = useState('');
-  const [signupPassword, setSignupPassword] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
-
-  // Worker signin
-  const [signinEmail, setSigninEmail] = useState('');
-  const [signinPassword, setSigninPassword] = useState('');
-
-  // Admin
-  const [adminEmail, setAdminEmail] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
-
-  // Forgot password
-  const [showForgotPassword, setShowForgotPassword] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotLoading, setForgotLoading] = useState(false);
-  const [forgotSuccess, setForgotSuccess] = useState('');
-  const [forgotError, setForgotError] = useState('');
-
-  // Local error messages
-  const [errorMsg, setErrorMsg] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
   const emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
+  const clearMessages = () => { setError(''); setSuccessMsg(''); };
 
-  const handleWorkerSignUp = async () => {
-    setErrorMsg('');
-    setSuccessMsg('');
-    if (!signupEmail || !signupPassword || !fullName || !phoneNumber) {
-      setErrorMsg('Please fill in all fields');
+  const handleWorkerAuth = async () => {
+    clearMessages();
+    if (workerMode === 'forgot-password') {
+      if (!email) { setError('Please enter your email address'); return; }
+      if (!emailRegex.test(email)) { setError('Please enter a valid email address'); return; }
+      try {
+        await apiService.forgotPassword(email);
+        setSuccessMsg('Password reset link sent! Check your email inbox.');
+      } catch (err: any) {
+        setError(err?.response?.data?.message || 'Failed to send reset link.');
+      }
       return;
     }
-    if (!emailRegex.test(signupEmail)) {
-      setErrorMsg('Please enter a valid email address');
-      return;
-    }
-    const phoneRegex = /^[6-9]\d{9}$/;
-    if (!phoneRegex.test(phoneNumber)) {
-      setErrorMsg('Please enter a valid 10-digit mobile number starting with 6-9');
-      return;
-    }
-    try {
-      await workerSignUp(signupEmail, signupPassword, fullName, phoneNumber);
-    } catch (error: any) {
-      setErrorMsg(error?.response?.data?.message || 'Sign up failed. Please try again.');
-    }
-  };
-
-  const handleWorkerSignIn = async () => {
-    setErrorMsg('');
-    setSuccessMsg('');
-    if (!signinEmail || !signinPassword) {
-      setErrorMsg('Please fill in all fields');
-      return;
-    }
-    if (!emailRegex.test(signinEmail)) {
-      setErrorMsg('Please enter a valid email address');
-      return;
-    }
-    try {
-      await workerSignIn(signinEmail, signinPassword);
-    } catch (error: any) {
-      setErrorMsg(error?.response?.data?.message || 'Sign in failed. Please try again.');
+    if (workerMode === 'signup') {
+      if (!fullName || !email || !password || !phoneNumber) { setError('Please fill in all fields'); return; }
+      if (!emailRegex.test(email)) { setError('Please enter a valid email address'); return; }
+      if (!/^[6-9]\d{9}$/.test(phoneNumber)) { setError('Enter a valid 10-digit mobile number starting with 6-9'); return; }
+      try { await workerSignUp(email, password, fullName, phoneNumber); }
+      catch (err: any) { setError(err?.response?.data?.error || err?.response?.data?.message || 'Sign up failed.'); }
+    } else {
+      if (!email || !password) { setError('Please fill in all fields'); return; }
+      if (!emailRegex.test(email)) { setError('Please enter a valid email address'); return; }
+      try { await workerSignIn(email, password); }
+      catch (err: any) { setError(err?.response?.data?.error || err?.response?.data?.message || 'Sign in failed.'); }
     }
   };
 
   const handleAdminLogin = async () => {
-    setErrorMsg('');
-    if (!adminEmail || !adminPassword) {
-      setErrorMsg('Please fill in all fields');
-      return;
-    }
-    if (!emailRegex.test(adminEmail)) {
-      setErrorMsg('Please enter a valid email address');
-      return;
-    }
-    try {
-      await adminLogin(adminEmail, adminPassword);
-    } catch (error: any) {
-      setErrorMsg(error?.response?.data?.message || 'Admin login failed.');
-    }
+    clearMessages();
+    if (!email || !password) { setError('Please fill in all fields'); return; }
+    if (!emailRegex.test(email)) { setError('Please enter a valid email address'); return; }
+    try { await adminLogin(email, password); }
+    catch (err: any) { setError(err?.response?.data?.error || err?.response?.data?.message || 'Admin login failed.'); }
   };
 
-  const handleForgotPassword = async () => {
-    setForgotError('');
-    setForgotSuccess('');
-    if (!forgotEmail) {
-      setForgotError('Please enter your email address');
-      return;
-    }
-    if (!emailRegex.test(forgotEmail)) {
-      setForgotError('Please enter a valid email address');
-      return;
-    }
-    try {
-      setForgotLoading(true);
-      await apiService.forgotPassword(forgotEmail);
-      setForgotSuccess('Password reset link sent! Check your email inbox.');
-    } catch (error: any) {
-      setForgotError(error?.response?.data?.message || 'Failed to send reset link. Please try again.');
-    } finally {
-      setForgotLoading(false);
-    }
+  const switchTab = (tab: AuthTab) => {
+    setActiveTab(tab); clearMessages();
+    setEmail(''); setPassword(''); setFullName(''); setPhoneNumber('');
   };
 
-  const switchTab = (tab: Tab) => {
-    setActiveTab(tab);
-    setErrorMsg('');
-    setSuccessMsg('');
-    setShowForgotPassword(false);
-    setForgotEmail('');
-    setForgotSuccess('');
-    setForgotError('');
-  };
+  const switchWorkerMode = (mode: WorkerMode) => { setWorkerMode(mode); clearMessages(); };
 
   if (loading) {
     return (
-      <ImageBackground source={require('../../assets/bg-hero.jpeg')} style={styles.bgImage} resizeMode="cover">
-        <View style={styles.overlay}>
-          <SafeAreaView style={styles.container}>
-            <View style={styles.centerContent}>
-              <ActivityIndicator size="large" color={activeTab === 'admin' ? '#f97316' : '#0d9488'} />
-              <Text style={styles.loadingText}>
-                {activeTab === 'worker_signup' ? 'Creating account...' : activeTab === 'admin' ? 'Admin login...' : 'Signing in...'}
-              </Text>
-            </View>
-          </SafeAreaView>
+      <SafeAreaView style={styles.loadingContainer}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f0fdfa" />
+        <View style={styles.loadingSpinnerWrap}>
+          <ActivityIndicator size="large" color="#0d9488" />
         </View>
-      </ImageBackground>
+        <Text style={styles.loadingText}>
+          {workerMode === 'signup' ? 'Creating your account...' : 'Signing you in...'}
+        </Text>
+      </SafeAreaView>
     );
   }
 
   return (
-    <ImageBackground source={require('../../assets/bg-hero.jpeg')} style={styles.bgImage} resizeMode="cover">
-      <View style={styles.overlay}>
-        <SafeAreaView style={styles.container}>
-          <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="#f0fdfa" />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 
-            {/* Header */}
-            <View style={styles.header}>
-              <Text style={styles.title}>Aasara</Text>
-              <Text style={styles.subtitle}>Delivery Safety Platform</Text>
+          {/* Branding */}
+          <View style={styles.brandSection}>
+            <View style={styles.logoCircle}>
+              <Ionicons name="shield-checkmark" size={36} color="#0d9488" />
             </View>
+            <Text style={styles.brandName}>Aasara AI</Text>
+            <Text style={styles.brandTagline}>Parametric Safety Net for Gig Workers</Text>
+          </View>
 
-            {/* Tab Buttons */}
-            <View style={styles.tabContainer}>
-              <TouchableOpacity
-                style={[styles.tab, activeTab === 'worker_signup' && styles.activeTab]}
-                onPress={() => switchTab('worker_signup')}
-              >
-                <Text style={[styles.tabText, activeTab === 'worker_signup' && styles.activeTabText]}>
-                  Sign Up
-                </Text>
+          {/* Auth Card */}
+          <View style={styles.authCard}>
+            {/* Tabs */}
+            <View style={styles.tabRow}>
+              <TouchableOpacity style={[styles.tabButton, activeTab === 'worker' && styles.tabButtonActive]} onPress={() => switchTab('worker')}>
+                <MaterialCommunityIcons name="bike-fast" size={18} color={activeTab === 'worker' ? '#0d9488' : '#94a3b8'} />
+                <Text style={[styles.tabButtonText, activeTab === 'worker' && styles.tabButtonTextActive]}>Gig Worker</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tab, activeTab === 'worker_signin' && styles.activeTab]}
-                onPress={() => switchTab('worker_signin')}
-              >
-                <Text style={[styles.tabText, activeTab === 'worker_signin' && styles.activeTabText]}>
-                  Sign In
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tab, activeTab === 'admin' && styles.activeTab]}
-                onPress={() => switchTab('admin')}
-              >
-                <Text style={[styles.tabText, activeTab === 'admin' && styles.activeTabText]}>
-                  Admin
-                </Text>
+              <TouchableOpacity style={[styles.tabButton, activeTab === 'admin' && styles.tabButtonActive]} onPress={() => switchTab('admin')}>
+                <Ionicons name="shield" size={17} color={activeTab === 'admin' ? '#0d9488' : '#94a3b8'} />
+                <Text style={[styles.tabButtonText, activeTab === 'admin' && styles.tabButtonTextActive]}>Admin</Text>
               </TouchableOpacity>
             </View>
 
-            {/* Global error/success messages */}
-            {errorMsg !== '' && (
-              <View style={styles.errorBox}>
-                <Text style={styles.errorBoxText}>⚠️ {errorMsg}</Text>
-              </View>
-            )}
-            {successMsg !== '' && (
-              <View style={styles.successBox}>
-                <Text style={styles.successBoxText}>✅ {successMsg}</Text>
-              </View>
-            )}
-
-            {/* ===== FORGOT PASSWORD MODE ===== */}
-            {showForgotPassword && activeTab === 'worker_signin' && (
-              <View style={styles.formContainer}>
-                <Text style={styles.formTitle}>Reset Password</Text>
-                <Text style={styles.formSubtitle}>
-                  Enter your registered email and we'll send a reset link.
-                </Text>
-
-                {forgotError !== '' && (
-                  <View style={styles.errorBox}>
-                    <Text style={styles.errorBoxText}>⚠️ {forgotError}</Text>
+            <View style={styles.formArea}>
+              {activeTab === 'admin' ? (
+                <>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Email Address</Text>
+                    <View style={styles.inputWrapper}>
+                      <Ionicons name="mail-outline" size={18} color="#94a3b8" style={styles.inputIcon} />
+                      <TextInput style={styles.textInput} placeholder="admin@aasara.ai" placeholderTextColor="#94a3b8" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} />
+                    </View>
                   </View>
-                )}
-                {forgotSuccess !== '' && (
-                  <View style={styles.successBox}>
-                    <Text style={styles.successBoxText}>✅ {forgotSuccess}</Text>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Password</Text>
+                    <View style={styles.inputWrapper}>
+                      <Ionicons name="lock-closed-outline" size={18} color="#94a3b8" style={styles.inputIcon} />
+                      <TextInput style={[styles.textInput, { flex: 1 }]} placeholder="Enter your password" placeholderTextColor="#94a3b8" value={password} onChangeText={setPassword} secureTextEntry={!showPassword} />
+                      <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
+                        <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color="#94a3b8" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                )}
+                </>
+              ) : (
+                <>
+                  {/* Sign Up / Login toggle */}
+                  <View style={styles.modeToggle}>
+                    <TouchableOpacity style={[styles.modeBtn, workerMode === 'signup' && styles.modeBtnActive]} onPress={() => switchWorkerMode('signup')}>
+                      <Text style={[styles.modeBtnText, workerMode === 'signup' && styles.modeBtnTextActive]}>Sign Up</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.modeBtn, (workerMode === 'login' || workerMode === 'forgot-password') && styles.modeBtnActive]} onPress={() => switchWorkerMode('login')}>
+                      <Text style={[styles.modeBtnText, (workerMode === 'login' || workerMode === 'forgot-password') && styles.modeBtnTextActive]}>Login</Text>
+                    </TouchableOpacity>
+                  </View>
 
-                <TextInput
-                  style={styles.input}
-                  placeholder="Your registered email"
-                  placeholderTextColor="#aaa"
-                  value={forgotEmail}
-                  onChangeText={setForgotEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
+                  {workerMode === 'forgot-password' ? (
+                    <>
+                      <Text style={styles.forgotDesc}>Enter your registered email address and we'll send you a link to reset your password.</Text>
+                      <View style={styles.inputGroup}>
+                        <Text style={styles.inputLabel}>Email Address</Text>
+                        <View style={styles.inputWrapper}>
+                          <Ionicons name="mail-outline" size={18} color="#94a3b8" style={styles.inputIcon} />
+                          <TextInput style={styles.textInput} placeholder="you@example.com" placeholderTextColor="#94a3b8" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
+                        </View>
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      {workerMode === 'signup' && (
+                        <View style={styles.inputGroup}>
+                          <Text style={styles.inputLabel}>Full Name</Text>
+                          <View style={styles.inputWrapper}>
+                            <Ionicons name="person-outline" size={18} color="#94a3b8" style={styles.inputIcon} />
+                            <TextInput style={styles.textInput} placeholder="Enter your full name" placeholderTextColor="#94a3b8" value={fullName} onChangeText={setFullName} />
+                          </View>
+                        </View>
+                      )}
 
-                <TouchableOpacity
-                  style={[styles.button, styles.greenButton, forgotLoading && styles.buttonDisabled]}
-                  onPress={handleForgotPassword}
-                  disabled={forgotLoading}
-                >
-                  {forgotLoading
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={styles.buttonText}>Send Reset Link</Text>
-                  }
-                </TouchableOpacity>
+                      <View style={styles.inputGroup}>
+                        <Text style={styles.inputLabel}>Email Address</Text>
+                        <View style={styles.inputWrapper}>
+                          <Ionicons name="mail-outline" size={18} color="#94a3b8" style={styles.inputIcon} />
+                          <TextInput style={styles.textInput} placeholder="you@example.com" placeholderTextColor="#94a3b8" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" autoCorrect={false} />
+                        </View>
+                      </View>
 
-                <TouchableOpacity
-                  onPress={() => {
-                    setShowForgotPassword(false);
-                    setForgotEmail('');
-                    setForgotSuccess('');
-                    setForgotError('');
-                  }}
-                >
-                  <Text style={styles.linkText}>← Back to Login</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+                      {workerMode === 'signup' && (
+                        <View style={styles.inputGroup}>
+                          <Text style={styles.inputLabel}>Phone Number</Text>
+                          <View style={styles.inputWrapper}>
+                            <Ionicons name="call-outline" size={18} color="#94a3b8" style={styles.inputIcon} />
+                            <TextInput style={styles.textInput} placeholder="9876543210" placeholderTextColor="#94a3b8" value={phoneNumber} onChangeText={(t) => setPhoneNumber(t.replace(/[^0-9]/g, ''))} keyboardType="phone-pad" maxLength={10} />
+                          </View>
+                        </View>
+                      )}
 
-            {/* ===== WORKER SIGN UP ===== */}
-            {activeTab === 'worker_signup' && (
-              <View style={styles.formContainer}>
-                <Text style={styles.formTitle}>Create Account</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Full Name"
-                  placeholderTextColor="#aaa"
-                  value={fullName}
-                  onChangeText={setFullName}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Email"
-                  placeholderTextColor="#aaa"
-                  value={signupEmail}
-                  onChangeText={setSignupEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Phone Number (10 digits, starts 6–9)"
-                  placeholderTextColor="#aaa"
-                  value={phoneNumber}
-                  onChangeText={(text) => setPhoneNumber(text.replace(/[^0-9]/g, ''))}
-                  keyboardType="phone-pad"
-                  maxLength={10}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Min. 8 chars, 1 Uppercase, 1 Number, 1 Special"
-                  placeholderTextColor="#aaa"
-                  value={signupPassword}
-                  onChangeText={setSignupPassword}
-                  secureTextEntry
-                />
-                <Text style={styles.fieldHint}>
-                  Must contain an uppercase letter, number, and special character
+                      <View style={styles.inputGroup}>
+                        <View style={styles.labelRow}>
+                          <Text style={styles.inputLabel}>Password</Text>
+                          {workerMode === 'login' && (
+                            <TouchableOpacity onPress={() => switchWorkerMode('forgot-password')}>
+                              <Text style={styles.forgotLink}>Forgot Password?</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                        <View style={styles.inputWrapper}>
+                          <Ionicons name="lock-closed-outline" size={18} color="#94a3b8" style={styles.inputIcon} />
+                          <TextInput style={[styles.textInput, { flex: 1 }]} placeholder={workerMode === 'signup' ? 'Min 8 chars, Upper, Number, Special' : '••••••••'} placeholderTextColor="#94a3b8" value={password} onChangeText={setPassword} secureTextEntry={!showPassword} />
+                          <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
+                            <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+                        {workerMode === 'signup' && <Text style={styles.fieldHint}>Must contain uppercase, number, and special character</Text>}
+                      </View>
+                    </>
+                  )}
+                </>
+              )}
+
+              {/* Messages */}
+              {successMsg !== '' && (
+                <View style={styles.successBanner}>
+                  <Ionicons name="checkmark-circle" size={16} color="#15803d" />
+                  <Text style={styles.successBannerText}>{successMsg}</Text>
+                </View>
+              )}
+              {error !== '' && (
+                <View style={styles.errorBanner}>
+                  <Ionicons name="alert-circle" size={16} color="#dc2626" />
+                  <Text style={styles.errorBannerText}>{error}</Text>
+                </View>
+              )}
+
+              {/* Submit */}
+              <TouchableOpacity style={styles.submitBtn} onPress={activeTab === 'admin' ? handleAdminLogin : handleWorkerAuth} activeOpacity={0.85}>
+                <Text style={styles.submitBtnText}>
+                  {activeTab === 'admin' ? 'Sign In' : workerMode === 'signup' ? 'Create Account' : workerMode === 'forgot-password' ? 'Send Reset Link' : 'Sign In'}
                 </Text>
-                <TouchableOpacity style={[styles.button, styles.greenButton]} onPress={handleWorkerSignUp}>
-                  <Text style={styles.buttonText}>Create Account</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+                <Ionicons name="arrow-forward" size={18} color="#fff" style={{ marginLeft: 6 }} />
+              </TouchableOpacity>
 
-            {/* ===== WORKER SIGN IN ===== */}
-            {activeTab === 'worker_signin' && !showForgotPassword && (
-              <View style={styles.formContainer}>
-                <Text style={styles.formTitle}>Welcome Back</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Email"
-                  placeholderTextColor="#aaa"
-                  value={signinEmail}
-                  onChangeText={setSigninEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Password"
-                  placeholderTextColor="#aaa"
-                  value={signinPassword}
-                  onChangeText={setSigninPassword}
-                  secureTextEntry
-                />
-                <TouchableOpacity
-                  onPress={() => {
-                    setShowForgotPassword(true);
-                    setForgotEmail(signinEmail);
-                    setErrorMsg('');
-                  }}
-                >
-                  <Text style={styles.forgotLink}>Forgot Password?</Text>
+              {workerMode === 'forgot-password' && (
+                <TouchableOpacity style={styles.backToLoginBtn} onPress={() => switchWorkerMode('login')}>
+                  <Ionicons name="arrow-back" size={16} color="#0d9488" />
+                  <Text style={styles.backToLoginText}>Back to Login</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.button, styles.greenButton]} onPress={handleWorkerSignIn}>
-                  <Text style={styles.buttonText}>Sign In</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+              )}
+            </View>
+          </View>
 
-            {/* ===== ADMIN LOGIN ===== */}
-            {activeTab === 'admin' && (
-              <View style={styles.formContainer}>
-                <Text style={styles.formTitle}>Admin Access</Text>
-                <Text style={styles.adminHint}>Demo credentials: admin@aasara.ai / admin123456</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Admin Email"
-                  placeholderTextColor="#aaa"
-                  value={adminEmail}
-                  onChangeText={setAdminEmail}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Admin Password"
-                  placeholderTextColor="#aaa"
-                  value={adminPassword}
-                  onChangeText={setAdminPassword}
-                  secureTextEntry
-                />
-                <TouchableOpacity style={[styles.button, styles.orangeButton]} onPress={handleAdminLogin}>
-                  <Text style={styles.buttonText}>Admin Login</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-          </ScrollView>
-        </SafeAreaView>
-      </View>
-    </ImageBackground>
+          <Text style={styles.footer}>Powered by Aasara AI • Industrial Fintech Platform</Text>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  bgImage: {
-    flex: 1,
-  },
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.18)',
-  },
-  container: {
-    flex: 1,
-    backgroundColor: 'transparent',
-  },
-  scrollContent: {
-    flexGrow: 1,
-    padding: 20,
-    justifyContent: 'center',
-  },
-  header: {
-    marginBottom: 32,
-    alignItems: 'center',
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#0d9488',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#134e4a',
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    marginBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#99f6e4',
-    backgroundColor: 'rgba(255,255,255,0.60)',
-    borderRadius: 8,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-  },
-  activeTab: {
-    borderBottomColor: '#0d9488',
-  },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#64748b',
-  },
-  activeTabText: {
-    color: '#0d9488',
-  },
-  errorBox: {
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-  },
-  errorBoxText: {
-    color: '#b91c1c',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  successBox: {
-    backgroundColor: '#f0fdf4',
-    borderWidth: 1,
-    borderColor: '#bbf7d0',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-  },
-  successBoxText: {
-    color: '#15803d',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  formContainer: {
-    gap: 14,
-    backgroundColor: 'rgba(255,255,255,0.80)',
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(13,148,136,0.20)',
-  },
-  formTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#134e4a',
-    marginBottom: 4,
-  },
-  formSubtitle: {
-    fontSize: 13,
-    color: '#64748b',
-    lineHeight: 18,
-  },
-  input: {
-    backgroundColor: 'rgba(255,255,255,0.90)',
-    borderWidth: 1,
-    borderColor: '#99f6e4',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 14,
-    color: '#134e4a',
-  },
-  fieldHint: {
-    fontSize: 11,
-    color: '#64748b',
-    marginTop: -6,
-    paddingHorizontal: 4,
-  },
-  forgotLink: {
-    fontSize: 13,
-    color: '#0d9488',
-    fontWeight: '600',
-    textAlign: 'right',
-    marginTop: -6,
-  },
-  linkText: {
-    fontSize: 13,
-    color: '#0d9488',
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  button: {
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-    minHeight: 48,
-  },
-  greenButton: {
-    backgroundColor: '#0d9488',
-  },
-  orangeButton: {
-    backgroundColor: '#f97316',
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-  adminHint: {
-    fontSize: 12,
-    color: '#64748b',
-    fontStyle: 'italic',
-    textAlign: 'center',
-  },
-  centerContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: '#134e4a',
-  },
+  container: { flex: 1, backgroundColor: '#f0fdfa' },
+  scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingTop: Platform.OS === 'ios' ? 20 : 30, paddingBottom: 40, justifyContent: 'center' },
+  loadingContainer: { flex: 1, backgroundColor: '#f0fdfa', justifyContent: 'center', alignItems: 'center' },
+  loadingSpinnerWrap: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#ccfbf1', justifyContent: 'center', alignItems: 'center' },
+  loadingText: { fontSize: 15, color: '#0f766e', fontWeight: '500', marginTop: 16 },
+
+  brandSection: { alignItems: 'center', marginBottom: 32 },
+  logoCircle: { width: 72, height: 72, borderRadius: 36, backgroundColor: '#ccfbf1', justifyContent: 'center', alignItems: 'center', marginBottom: 12, shadowColor: '#0d9488', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 12, elevation: 4 },
+  brandName: { fontSize: 28, fontWeight: '800', color: '#0f766e', letterSpacing: -0.5 },
+  brandTagline: { fontSize: 13, color: '#5eead4', fontWeight: '600', marginTop: 4 },
+
+  authCard: { backgroundColor: '#fff', borderRadius: 20, shadowColor: '#0d9488', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.08, shadowRadius: 24, elevation: 6, overflow: 'hidden', borderWidth: 1, borderColor: '#e0f2fe' },
+
+  tabRow: { flexDirection: 'row', backgroundColor: '#f0fdfa', borderBottomWidth: 1, borderBottomColor: '#e0f2fe' },
+  tabButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 15, gap: 6, borderBottomWidth: 2.5, borderBottomColor: 'transparent' },
+  tabButtonActive: { backgroundColor: '#fff', borderBottomColor: '#0d9488' },
+  tabButtonText: { fontSize: 14, fontWeight: '600', color: '#94a3b8' },
+  tabButtonTextActive: { color: '#0d9488', fontWeight: '700' },
+
+  formArea: { padding: 20, gap: 14 },
+  modeToggle: { flexDirection: 'row', backgroundColor: '#f1f5f9', borderRadius: 12, padding: 4, marginBottom: 4 },
+  modeBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  modeBtnActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
+  modeBtnText: { fontSize: 14, fontWeight: '500', color: '#94a3b8' },
+  modeBtnTextActive: { color: '#0f766e', fontWeight: '700' },
+
+  inputGroup: { gap: 6 },
+  labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  inputLabel: { fontSize: 13, fontWeight: '600', color: '#475569' },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, paddingHorizontal: 12, minHeight: 48 },
+  inputIcon: { marginRight: 10 },
+  textInput: { flex: 1, fontSize: 15, color: '#1e293b', paddingVertical: Platform.OS === 'ios' ? 13 : 10 },
+  eyeBtn: { padding: 4 },
+  fieldHint: { fontSize: 11, color: '#94a3b8', marginTop: 2 },
+  forgotLink: { fontSize: 12, color: '#0d9488', fontWeight: '600' },
+  forgotDesc: { fontSize: 13, color: '#64748b', lineHeight: 19 },
+
+  successBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0fdf4', borderWidth: 1, borderColor: '#bbf7d0', borderRadius: 10, padding: 12, gap: 8 },
+  successBannerText: { fontSize: 13, color: '#15803d', fontWeight: '500', flex: 1 },
+  errorBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', borderRadius: 10, padding: 12, gap: 8 },
+  errorBannerText: { fontSize: 13, color: '#dc2626', fontWeight: '500', flex: 1 },
+
+  submitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#0d9488', paddingVertical: 15, borderRadius: 14, shadowColor: '#0d9488', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
+  submitBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+
+  backToLoginBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderWidth: 1, borderColor: '#e0f2fe', borderRadius: 12, gap: 6 },
+  backToLoginText: { fontSize: 14, color: '#0d9488', fontWeight: '600' },
+
+  footer: { textAlign: 'center', fontSize: 12, color: '#94a3b8', marginTop: 24, fontWeight: '500' },
 });
 
 export default LoginScreen;

@@ -1,13 +1,167 @@
 """
 AASARA Fraud Detection Engine — 3-Layer Zero-Trust Verification
-Layer 1: Sensor Fusion & Kinematic AI
+Layer 1: Sensor Fusion & Kinematic AI (Isolation Forest + Rule-Based)
 Layer 2: Syndicate Detection (Coordinated Fraud)
 Layer 3: Graceful Degradation & Honest Worker Protection
 """
 import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 import hashlib
 import json
+
+
+# ==============================================================================
+# ISOLATION FOREST — ML ANOMALY DETECTION MODEL
+# ==============================================================================
+
+class TelemetryAnomalyModel:
+    """
+    Isolation Forest (unsupervised) trained on synthetic 'normal' telemetry.
+    Scores incoming sensor data: higher = more anomalous.
+    
+    Features:
+      0  avg_speed_ms          — average speed between GPS points
+      1  heading_variance       — variance of heading changes (rad)
+      2  accel_variance         — accelerometer variance
+      3  gyro_variance          — gyroscope variance
+      4  battery_temp           — device battery temperature (°C)
+      5  pressure_deviation     — |barometric - 1013| hPa
+      6  path_straightness      — ratio of direct distance to total path length
+      7  max_speed_ms           — peak speed between consecutive points
+    """
+
+    FEATURE_NAMES = [
+        'avg_speed_ms', 'heading_variance', 'accel_variance', 'gyro_variance',
+        'battery_temp', 'pressure_deviation', 'path_straightness', 'max_speed_ms',
+    ]
+
+    def __init__(self):
+        self.model = None
+        self.scaler = None
+        self._train()
+
+    def _generate_normal_data(self, n=3000):
+        """Generate synthetic telemetry for NORMAL (honest) workers."""
+        np.random.seed(42)
+
+        # Normal workers have moderate, variable speed (walking/biking in city)
+        avg_speed = np.random.lognormal(1.5, 0.6, n).clip(0.5, 15)       # 0.5-15 m/s
+        heading_var = np.random.gamma(2.0, 0.15, n).clip(0.05, 1.5)      # erratic turns
+        accel_var = np.random.gamma(3.0, 0.1, n).clip(0.02, 2.0)         # active movement
+        gyro_var = np.random.gamma(2.5, 0.04, n).clip(0.01, 0.5)         # some phone rotation
+        battery_temp = np.random.normal(32, 4, n).clip(20, 45)            # normal range
+        pressure_dev = np.abs(np.random.normal(0, 5, n)).clip(0, 30)      # near sea level
+        path_straight = np.random.beta(2, 5, n).clip(0.05, 0.95)         # curvy paths
+        max_speed = avg_speed * np.random.uniform(1.2, 2.5, n)           # bursts
+        max_speed = max_speed.clip(1, 25)
+
+        X = np.column_stack([
+            avg_speed, heading_var, accel_var, gyro_var,
+            battery_temp, pressure_dev, path_straight, max_speed,
+        ])
+        return X
+
+    def _train(self):
+        print("[FraudEngine] Training Isolation Forest anomaly model...")
+        X_normal = self._generate_normal_data()
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X_normal)
+
+        self.model = IsolationForest(
+            n_estimators=200,
+            max_samples='auto',
+            contamination=0.05,     # expect ~5% anomalies
+            max_features=1.0,
+            random_state=42,
+            n_jobs=-1,
+        )
+        self.model.fit(X_scaled)
+        print("[FraudEngine] ✅ Isolation Forest trained (200 trees, 3000 samples)")
+
+    def extract_features(self, path_points, accel_data, gyro_data,
+                         battery_temp, barometric_pressure):
+        """Extract 8-feature vector from raw telemetry."""
+        # Speed features
+        speeds = []
+        if path_points and len(path_points) >= 2:
+            for i in range(1, len(path_points)):
+                d = _haversine(
+                    path_points[i-1]['lat'], path_points[i-1]['lng'],
+                    path_points[i]['lat'], path_points[i]['lng']
+                ) * 1000
+                t1 = _parse_time(path_points[i-1].get('timestamp'))
+                t2 = _parse_time(path_points[i].get('timestamp'))
+                dt = max(1, (t2 - t1).total_seconds())
+                speeds.append(d / dt)
+
+        avg_speed = float(np.mean(speeds)) if speeds else 0
+        max_speed = float(np.max(speeds)) if speeds else 0
+
+        # Heading variance
+        headings = []
+        if path_points and len(path_points) >= 3:
+            for i in range(1, len(path_points)):
+                dy = path_points[i]['lat'] - path_points[i-1]['lat']
+                dx = path_points[i]['lng'] - path_points[i-1]['lng']
+                headings.append(np.arctan2(dy, dx))
+        if len(headings) >= 2:
+            changes = [abs(headings[i] - headings[i-1]) for i in range(1, len(headings))]
+            heading_var = float(np.var(changes))
+        else:
+            heading_var = 0.0
+
+        # Sensor variances
+        accel_var = float(np.var(accel_data)) if accel_data and len(accel_data) >= 3 else 0.0
+        gyro_var = float(np.var(gyro_data)) if gyro_data and len(gyro_data) >= 3 else 0.0
+
+        # Battery & pressure
+        batt = battery_temp if battery_temp else 30.0
+        pres_dev = abs((barometric_pressure or 1013) - 1013)
+
+        # Path straightness = direct_distance / total_distance
+        if path_points and len(path_points) >= 2:
+            direct = _haversine(
+                path_points[0]['lat'], path_points[0]['lng'],
+                path_points[-1]['lat'], path_points[-1]['lng']
+            ) * 1000
+            total = sum(
+                _haversine(
+                    path_points[i-1]['lat'], path_points[i-1]['lng'],
+                    path_points[i]['lat'], path_points[i]['lng']
+                ) * 1000
+                for i in range(1, len(path_points))
+            )
+            straightness = direct / max(total, 1)
+        else:
+            straightness = 0.5
+
+        return np.array([[avg_speed, heading_var, accel_var, gyro_var,
+                          batt, pres_dev, straightness, max_speed]])
+
+    def score(self, features):
+        """
+        Score telemetry using Isolation Forest.
+        Returns 0-100 anomaly score (higher = more suspicious).
+        
+        IsolationForest.decision_function returns negative values for anomalies.
+        We invert and scale to 0-100.
+        """
+        features_scaled = self.scaler.transform(features)
+        # decision_function: negative = anomaly, positive = normal
+        raw_score = self.model.decision_function(features_scaled)[0]
+        # Convert: typically ranges from about -0.5 (anomaly) to +0.3 (normal)
+        # Map to 0-100 where 100 = most anomalous
+        anomaly_score = max(0, min(100, (0.15 - raw_score) * 150))
+        is_anomaly = self.model.predict(features_scaled)[0] == -1
+        return {
+            'anomaly_score': round(float(anomaly_score), 1),
+            'raw_isolation_score': round(float(raw_score), 4),
+            'is_anomaly': bool(is_anomaly),
+            'model': 'IsolationForest',
+            'n_estimators': 200,
+        }
 
 
 # ==============================================================================
@@ -355,12 +509,13 @@ class HonestWorkerProtector:
 # ==============================================================================
 
 class FraudEngine:
-    """Main fraud detection orchestrator."""
+    """Main fraud detection orchestrator — Isolation Forest + Rule-Based hybrid."""
 
     def __init__(self):
         self.kinematic = KinematicAnalyzer()
         self.syndicate = SyndicateDetector()
         self.protector = HonestWorkerProtector()
+        self.anomaly_model = TelemetryAnomalyModel()
 
     def run_full_check(self, worker_data):
         """
@@ -397,15 +552,32 @@ class FraudEngine:
             worker_data.get('weather_condition', '')
         )
 
-        layer1_score = (
+        # Isolation Forest ML anomaly score
+        iso_features = self.anomaly_model.extract_features(
+            path,
+            worker_data.get('accelerometer', []),
+            worker_data.get('gyroscope', []),
+            worker_data.get('battery_temp'),
+            worker_data.get('barometric_pressure'),
+        )
+        isolation_result = self.anomaly_model.score(iso_features)
+
+        # Hybrid Layer 1: 50% Isolation Forest + 50% rule-based
+        rule_based_score = (
             teleport['score'] * 0.35 +
             linear['score'] * 0.2 +
             stillness['score'] * 0.25 +
             env['score'] * 0.2
         )
+        layer1_score = (
+            isolation_result['anomaly_score'] * 0.50 +
+            rule_based_score * 0.50
+        )
 
         results['layer1_sensor_fusion'] = {
             'score': round(layer1_score, 1),
+            'isolation_forest': isolation_result,
+            'rule_based_score': round(rule_based_score, 1),
             'teleportation': teleport,
             'linear_path': linear,
             'stillness': stillness,

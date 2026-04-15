@@ -1,4 +1,5 @@
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const axios = require('axios');
 const mongoose = require('mongoose');
@@ -7,11 +8,16 @@ const jwt = require('jsonwebtoken');
 const { createHmac, randomBytes } = require('crypto');
 const Razorpay = require('razorpay');
 const twilio = require('twilio');
+const cron = require('node-cron');
+const { Server: SocketIOServer } = require('socket.io');
 const { BrevoClient } = require('@getbrevo/brevo');
 require('dotenv').config();
 
 // Web3 / Chainlink service (gracefully disabled if contract not configured)
 const web3Service = require('./services/web3Service');
+
+// Payout service — handles Razorpay payouts from the liquidity pool
+const payoutService = require('./services/payoutService');
 
 // Brevo transactional email client
 let brevoClient = null;
@@ -87,6 +93,56 @@ app.use(cors({
 
 app.use(express.json());
 
+// ==================== SOCKET.IO SETUP ====================
+const server = http.createServer(app);
+const io = new SocketIOServer(server, {
+  cors: {
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+      const allowed =
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        origin.endsWith('.netlify.app') ||
+        origin.endsWith('.railway.app') ||
+        origin.endsWith('.onrender.com') ||
+        EXTRA_ORIGINS.includes(origin);
+      callback(null, allowed);
+    },
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
+});
+
+// Socket.io auth middleware — validate JWT
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error('Authentication required'));
+  jwt.verify(token, process.env.JWT_SECRET || 'aasara-secret-key', (err, user) => {
+    if (err) return next(new Error('Invalid token'));
+    socket.user = user;
+    next();
+  });
+});
+
+io.on('connection', (socket) => {
+  const userId = socket.user?.userId || socket.user?.id;
+  if (userId) {
+    socket.join(`user:${userId}`);            // personal room
+    socket.join(`role:${socket.user.role}`);   // role-based room (admin / worker)
+  }
+  console.log(`🔌 [Socket.io] Connected: ${socket.user?.email || 'unknown'} (${userId})`);
+
+  socket.on('disconnect', () => {
+    console.log(`🔌 [Socket.io] Disconnected: ${socket.user?.email || 'unknown'}`);
+  });
+});
+
+// Helper: emit pipeline events to a specific worker + all admins
+function emitPipelineEvent(workerId, eventName, data) {
+  io.to(`user:${workerId}`).emit(eventName, data);
+  io.to('role:admin').emit(eventName, data);
+}
+
 // Health check (used by Railway / Render / load balancers)
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
@@ -153,6 +209,35 @@ app.post('/api/auth/signup', async (req, res) => {
     const emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({ error: 'Please provide a valid email address' });
+    }
+
+    // Block disposable / temporary / mock email providers
+    const blockedDomains = [
+      'mailinator.com', 'guerrillamail.com', 'tempmail.com', 'throwaway.email',
+      'yopmail.com', 'sharklasers.com', 'guerrillamailblock.com', 'grr.la',
+      'dispostable.com', 'maildrop.cc', 'fakeinbox.com', 'trashmail.com',
+      'tempail.com', 'getnada.com', 'emailondeck.com', 'temp-mail.org',
+      'mohmal.com', 'burnermail.io', 'discard.email', 'mailnesia.com',
+      'tmail.com', 'harakirimail.com', 'trashmail.net', 'mailcatch.com',
+      'tempr.email', 'spamgourmet.com', 'mytemp.email', '10minutemail.com',
+      'test.com', 'example.com', 'fake.com', 'dummy.com', 'abc.com',
+      'xyz.com', 'tempmail.net', 'mailtemp.com',
+    ];
+    const emailDomain = email.toLowerCase().split('@')[1];
+    if (blockedDomains.includes(emailDomain)) {
+      return res.status(400).json({ error: 'Disposable or temporary email addresses are not allowed. Please use a real email (Gmail, Outlook, Yahoo, etc.).' });
+    }
+
+    // Only allow well-known real email providers
+    const allowedDomains = [
+      'gmail.com', 'yahoo.com', 'yahoo.in', 'yahoo.co.in',
+      'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+      'rediffmail.com', 'aol.com', 'icloud.com', 'me.com',
+      'protonmail.com', 'proton.me', 'zoho.com', 'zoho.in',
+      'mail.com', 'gmx.com', 'yandex.com',
+    ];
+    if (!allowedDomains.includes(emailDomain)) {
+      return res.status(400).json({ error: `Email domain "@${emailDomain}" is not accepted. Please use Gmail, Outlook, Yahoo, or another major provider.` });
     }
 
     // Password Strength Check
@@ -286,6 +371,9 @@ app.post('/api/auth/signin', async (req, res) => {
         fullName: user.fullName,
         phoneNumber: user.phoneNumber,
         userType: user.userType,
+        platform: user.platform,
+        onboardingStep: user.onboardingStep || 1,
+        onboardingCompleted: user.onboardingCompleted || false,
       },
       token,
     });
@@ -391,11 +479,19 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // Step 1: Link Platform
 app.post('/api/onboarding/link-platform', authenticateToken, async (req, res) => {
   try {
-    const { platform, platformCode } = req.body;
+    const { platform, platformCode, upiId } = req.body;
     const validPlatforms = ['zomato', 'swiggy', 'dunzo', 'other'];
 
     if (!platform || !validPlatforms.includes(platform)) {
       return res.status(400).json({ error: 'Invalid platform' });
+    }
+
+    // Validate UPI ID format if provided (e.g. name@okicici, name@paytm, etc.)
+    if (upiId) {
+      const upiRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/;
+      if (!upiRegex.test(upiId)) {
+        return res.status(400).json({ error: 'Invalid UPI ID format. Example: yourname@okicici' });
+      }
     }
 
     const user = await User.findByIdAndUpdate(
@@ -403,6 +499,7 @@ app.post('/api/onboarding/link-platform', authenticateToken, async (req, res) =>
       {
         platform,
         platformCode: platformCode || null,
+        upiId: upiId || null,
         onboardingStep: 2,
       },
       { new: true }
@@ -465,6 +562,13 @@ app.post('/api/onboarding/premium-quote', authenticateToken, async (req, res) =>
 
       mlResult = mlResponse.data;
       console.log(`✅ ML Engine returned both plan quotes`);
+
+      // Auto-save detected city to user profile
+      const detectedCity = mlResult?.zone?.detected_city;
+      if (detectedCity && detectedCity !== 'Other' && detectedCity !== 'Unknown') {
+        await User.findByIdAndUpdate(req.user.userId, { city: detectedCity });
+        console.log(`📍 Auto-saved city: ${detectedCity}`);
+      }
     } catch (mlError) {
       console.warn('⚠️ ML Engine unavailable, using fallback pricing:', mlError.message);
     }
@@ -586,6 +690,17 @@ app.post('/api/onboarding/premium-quote', authenticateToken, async (req, res) =>
         premiumAsPercentage: 2.0,
         message: '✅ Both plans are under 3% of typical weekly earnings — extremely affordable',
       },
+      // Fallback risk analysis so UI doesn't show zeros
+      weatherRisk: { score: 35, label: '🟡 Moderate', description: 'ML engine offline — using estimated values' },
+      zoneSafety: {
+        safety_score: 65,
+        is_safe_zone: true,
+        detected_city: lat && lng ? 'Detecting...' : 'Hyderabad',
+        risk_breakdown: {},
+      },
+      disruptionForecast: {
+        weekly_summary: { avg_disruption_probability: 0.15, risk_level: 'moderate' },
+      },
     });
   } catch (err) {
     console.error('Premium quote error:', err);
@@ -667,7 +782,8 @@ app.post('/api/onboarding/verify-payment', authenticateToken, async (req, res) =
       }
     }
 
-    // Create subscription
+    // Create subscription — 48-hour lockout for adverse selection prevention
+    const coverageStartsAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48 hours from now
     const subscription = {
       planId: `plan_${Date.now()}`,
       status: 'active',
@@ -682,6 +798,7 @@ app.post('/api/onboarding/verify-payment', authenticateToken, async (req, res) =
       orderId,
       verifiedAt: new Date(),
       verificationStatus: 'verified',
+      coverageStartsAt, // Coverage activates after 48-hour lockout
     };
 
     const user = await User.findByIdAndUpdate(
@@ -690,7 +807,7 @@ app.post('/api/onboarding/verify-payment', authenticateToken, async (req, res) =
         activeSubscription: subscription,
         onboardingStep: 3, // Onboarding complete
         onboardingCompleted: true,
-        policyActive: true,
+        policyActive: false, // Coverage inactive during 48-hour lockout period
       },
       { new: true }
     ).select('-password');
@@ -725,10 +842,36 @@ app.post('/api/onboarding/verify-payment', authenticateToken, async (req, res) =
       });
     }
 
+    // Add premium to liquidity pool (60-70% of premium goes to pool)
+    const poolContribution = Math.round(planDetails.amount * 0.65 * 100) / 100;
+    await LiquidityPool.findOneAndUpdate(
+      { poolId: 'main_pool' },
+      {
+        $inc: { totalBalance: poolContribution, totalContributions: poolContribution, totalWorkers: 1 },
+        $set: { lastUpdated: new Date() },
+        $push: {
+          transactions: {
+            $each: [{
+              type: 'contribution',
+              amount: poolContribution,
+              workerId: req.user.userId,
+              timestamp: new Date(),
+            }],
+            $slice: -100,
+          },
+        },
+      },
+      { upsert: true }
+    );
+    console.log(`💰 Pool contribution: ₹${poolContribution} from ${user.fullName} (premium: ₹${planDetails.amount})`);
+
     res.json({
-      message: 'Payment verified ✅ and subscription activated',
+      message: 'Payment verified ✅ — Coverage activates in 48 hours',
       user,
       subscription,
+      poolContribution,
+      coverageStartsAt,
+      lockoutHours: 48,
     });
   } catch (err) {
     console.error('Payment verification error:', err);
@@ -1466,8 +1609,13 @@ app.get('/api/subscription/get-active', authenticateToken, async (req, res) => {
     }
 
     try {
-      // Check if subscription is still valid
+      // Validate dates before using them
       const endDate = new Date(user.activeSubscription.endDate);
+      const startDate = new Date(user.activeSubscription.startDate);
+      if (isNaN(endDate.getTime()) || isNaN(startDate.getTime())) {
+        return res.status(400).json({ error: 'Subscription has invalid dates', subscription: null });
+      }
+
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
@@ -1479,8 +1627,9 @@ app.get('/api/subscription/get-active', authenticateToken, async (req, res) => {
         subscription: {
           amount: user.activeSubscription.amount,
           riskTier: user.activeSubscription.riskTier,
-          weekStart: new Date(user.activeSubscription.startDate).toISOString().split('T')[0],
-          weekEnd: new Date(user.activeSubscription.endDate).toISOString().split('T')[0],
+          platform: user.activeSubscription.platform,
+          weekStart: startDate.toISOString().split('T')[0],
+          weekEnd: endDate.toISOString().split('T')[0],
           activatedAt: user.activeSubscription.verifiedAt,
           paymentId: user.activeSubscription.paymentId,
           status: 'active',
@@ -1493,6 +1642,26 @@ app.get('/api/subscription/get-active', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Get subscription error:', err);
     res.status(500).json({ error: 'Failed to fetch subscription', details: err.message, subscription: null });
+  }
+});
+
+// ==================== SAVE USER GPS LOCATION ====================
+app.post('/api/user/save-location', authenticateToken, async (req, res) => {
+  try {
+    const { lat, lng } = req.body;
+    if (typeof lat !== 'number' || typeof lng !== 'number' || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      return res.status(400).json({ error: 'Invalid coordinates' });
+    }
+    const user = await User.findByIdAndUpdate(
+      req.user.userId,
+      { lastKnownLocation: { lat, lng, updatedAt: new Date() } },
+      { new: true }
+    ).select('lastKnownLocation city');
+    console.log(`📍 GPS saved for user ${req.user.userId}: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+    res.json({ success: true, location: user.lastKnownLocation });
+  } catch (err) {
+    console.error('Save location error:', err);
+    res.status(500).json({ error: 'Failed to save location' });
   }
 });
 
@@ -1559,6 +1728,8 @@ app.get('/api/admin/workers', authenticateToken, async (req, res) => {
         lastPingTime: worker.lastPingTime || null,
         pingAgeMs,
         pingStale: pingAgeMs ? pingAgeMs > 3 * 60 * 1000 : true,
+        city: worker.city || null,
+        lastKnownLocation: worker.lastKnownLocation || null,
       };
     });
 
@@ -1581,6 +1752,20 @@ app.post('/api/shifts/toggle-status', authenticateToken, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    // ── 48-Hour Lockout Guard: do not allow going online if coverage hasn't started ──
+    const bypassLockout = process.env.BYPASS_LOCKOUT === 'true';
+    if (isOnline && user.activeSubscription?.coverageStartsAt && !bypassLockout) {
+      const coverageStart = new Date(user.activeSubscription.coverageStartsAt);
+      if (Date.now() < coverageStart.getTime()) {
+        const hoursLeft = Math.ceil((coverageStart.getTime() - Date.now()) / (1000 * 60 * 60));
+        return res.status(403).json({
+          error: `Coverage lockout active. Your coverage activates in ${hoursLeft} hour(s). You cannot go online until then.`,
+          coverageStartsAt: coverageStart.toISOString(),
+          hoursRemaining: hoursLeft,
+        });
+      }
     }
 
     const updateData = {
@@ -1612,7 +1797,13 @@ app.post('/api/shifts/toggle-status', authenticateToken, async (req, res) => {
 app.post('/api/heartbeat', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    await User.findByIdAndUpdate(userId, { lastPingTime: new Date() });
+    const { lat, lng } = req.body || {};
+    const update = { lastPingTime: new Date() };
+    // Save GPS if provided
+    if (typeof lat === 'number' && typeof lng === 'number' && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      update.lastKnownLocation = { lat, lng, updatedAt: new Date() };
+    }
+    await User.findByIdAndUpdate(userId, update);
     res.json({ status: 'ok', pingTime: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ error: 'Heartbeat failed' });
@@ -1671,6 +1862,20 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       return res.status(400).json({ error: 'Worker does not have an active policy. Cannot trigger disruption.' });
     }
 
+    // ── 48-Hour Lockout Guard ──
+    const bypassLockout2 = process.env.BYPASS_LOCKOUT === 'true';
+    if (worker.activeSubscription?.coverageStartsAt && !bypassLockout2) {
+      const coverageStart = new Date(worker.activeSubscription.coverageStartsAt);
+      if (Date.now() < coverageStart.getTime()) {
+        const hoursLeft = Math.ceil((coverageStart.getTime() - Date.now()) / (1000 * 60 * 60));
+        return res.status(400).json({
+          error: `48-hour lockout active for ${worker.fullName}. Coverage starts in ${hoursLeft} hour(s).`,
+          coverageStartsAt: coverageStart.toISOString(),
+          hoursRemaining: hoursLeft,
+        });
+      }
+    }
+
     // Determine Flow A or Flow B based on heartbeat freshness
     const now = new Date();
     const lastPing = worker.lastPingTime ? new Date(worker.lastPingTime) : null;
@@ -1682,21 +1887,21 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
     console.log(`\n⚡ DISRUPTION TRIGGER: ${disruptionType.toUpperCase()} for ${worker.fullName}`);
     console.log(`   Flow ${flowType}: ${isOnlineAndFresh ? 'Online (fresh heartbeat)' : 'Offline/Stale (last ping ' + Math.round(pingAgeMs / 1000) + 's ago)'}`);
 
-    // ── Eligibility Gate: worker must have ≥5 active days before first payout ──
+    // ── Eligibility Gate: worker must have ≥90 active days before first payout (Social Security Code, 2020 §6) ──
     const subStartDate = worker.activeSubscription?.startDate
       ? new Date(worker.activeSubscription.startDate)
       : new Date(worker.createdAt);
     const activeDays = Math.floor((Date.now() - subStartDate.getTime()) / (1000 * 60 * 60 * 24));
     const bypassEligibility = process.env.BYPASS_ELIGIBILITY_CHECK === 'true';
-    if (activeDays < 5 && !bypassEligibility) {
-      console.warn(`🚫 Eligibility failed for ${worker.fullName}: ${activeDays} active day(s), minimum is 5`);
+    if (activeDays < 90 && !bypassEligibility) {
+      console.warn(`🚫 Eligibility failed for ${worker.fullName}: ${activeDays} active day(s), minimum is 90 (SS Code 2020)`);
       return res.status(400).json({
-        error: `Eligibility check failed: ${worker.fullName} has only ${activeDays} active day(s). Minimum 5 days required before first payout.`,
+        error: `Eligibility check failed: ${worker.fullName} has only ${activeDays} active day(s). Minimum 90 days required per Social Security Code, 2020 before first payout.`,
         activeDays,
-        required: 5,
+        required: 90,
       });
     }
-    if (bypassEligibility && activeDays < 5) {
+    if (bypassEligibility && activeDays < 90) {
       console.log(`⚠️  Eligibility bypassed (DEV mode) for ${worker.fullName}: ${activeDays} active day(s)`);
     }
 
@@ -1726,54 +1931,73 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
 
     const fraudScore = fraudResult.final_anomaly_score || 0;
     const verdict = fraudResult.fraud_verdict || 'auto_approve';
+
+    // Emit: trigger detected + fraud check
+    emitPipelineEvent(workerId, 'pipeline:stage', {
+      stage: 'trigger_detected',
+      trigger: disruptionType,
+      workerName: worker.fullName,
+      claimAmount,
+      timestamp: new Date().toISOString(),
+    });
+    emitPipelineEvent(workerId, 'pipeline:stage', {
+      stage: 'fraud_check',
+      fraudScore,
+      fraudVerdict: verdict,
+      workerName: worker.fullName,
+      claimAmount,
+      timestamp: new Date().toISOString(),
+    });
     
     const claimStatus_base = verdict === 'reject' ? 'rejected' : verdict === 'micro_verify' ? 'micro_verify' : 'paid';
     let claimStatus = claimStatus_base;
     let payoutStatus = verdict === 'auto_approve' ? 'completed' : 'pending';
     let razorpayPayoutId = null;
+    let payoutMethod = 'simulated';
+    let payoutUpiId = worker.upiId || `${worker.fullName.toLowerCase().replace(/\s+/g, '')}@okicici`;
 
-    // ── Razorpay Payout (wrapped for Payment_Failed_Retrying rollback) ──
+    const claimTxId = `txn_${Date.now()}_${workerId.slice(-6)}`;
+
+    // ── Payout from Liquidity Pool via payoutService ──
     if (verdict === 'auto_approve') {
-      try {
-        if (process.env.RAZORPAY_ACCOUNT_NUMBER) {
-          // Live RazorpayX payout — attempt real transfer
-          const rzPayout = await razorpay.payouts.create({
-            account_number: process.env.RAZORPAY_ACCOUNT_NUMBER,
-            amount: claimAmount * 100, // paise
-            currency: 'INR',
-            mode: 'UPI',
-            purpose: 'payout',
-            narration: `AASARA-${disruptionType.toUpperCase()}-${disruptionId}`,
-            fund_account: {
-              account_type: 'vpa',
-              vpa: {
-                address: `${worker.fullName.toLowerCase().replace(/\s+/g, '')}@okicici`,
-              },
-              contact: {
-                name: worker.fullName,
-                email: worker.email,
-                contact: `+91${worker.phoneNumber}`,
-                type: 'employee',
-              },
-            },
-          });
-          razorpayPayoutId = rzPayout.id;
-          console.log(`✅ Razorpay payout initiated: ${razorpayPayoutId}`);
-        } else {
-          // Simulated payout in dev / demo mode
-          razorpayPayoutId = `rz_sim_${Date.now()}`;
-          console.log(`💸 [SIMULATED] Razorpay payout ₹${claimAmount} → ${worker.fullName}`);
-        }
-        claimStatus = 'paid';
-        payoutStatus = 'completed';
-      } catch (rzErr) {
-        console.error(`🔴 Razorpay payout failed for ${worker.fullName} — rolling back to Payment_Failed_Retrying:`, rzErr.message);
-        claimStatus = 'Payment_Failed_Retrying';
-        payoutStatus = 'failed';
-      }
-    }
+      const payoutResult = await payoutService.executePayout({
+        worker,
+        amount: claimAmount,
+        disruptionType,
+        disruptionId,
+        LiquidityPool,
+        claimId: claimTxId,
+      });
 
-    const crypto = require('crypto');
+      if (payoutResult.success) {
+        razorpayPayoutId = payoutResult.payoutId;
+        payoutMethod = payoutResult.payoutMethod;
+        payoutUpiId = payoutResult.upiId || payoutUpiId;
+        claimStatus = 'paid';
+        payoutStatus = payoutResult.payoutStatus;
+        console.log(`✅ Payout: ${payoutResult.message}`);
+      } else {
+        console.error(`🔴 Payout failed: ${payoutResult.message}`);
+        if (payoutResult.payoutMethod === 'pool_insufficient') {
+          claimStatus = 'Payment_Failed_Retrying';
+          payoutStatus = 'failed';
+          console.warn(`⚠️  Pool balance: ₹${payoutResult.poolBalance} — insufficient for ₹${claimAmount}`);
+        } else {
+          claimStatus = 'Payment_Failed_Retrying';
+          payoutStatus = 'failed';
+        }
+      }
+
+      emitPipelineEvent(workerId, 'pipeline:stage', {
+        stage: 'payout_initiated',
+        payoutMethod,
+        payoutId: razorpayPayoutId,
+        payoutStatus,
+        amount: claimAmount,
+        workerName: worker.fullName,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // ── On-chain logging via Chainlink/Solidity ─────────────────────────────
     let onChainEventId = null;
@@ -1805,11 +2029,20 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       } catch (web3Err) {
         console.warn('[Web3] On-chain logging failed (non-fatal):', web3Err.message);
       }
+
+      emitPipelineEvent(workerId, 'pipeline:stage', {
+        stage: 'blockchain_logged',
+        txHash,
+        explorerUrl,
+        workerName: worker.fullName,
+        claimAmount,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     // Create Claim
     const claim = new Claim({
-      transactionId: `txn_${Date.now()}_${workerId.slice(-6)}`,
+      transactionId: claimTxId,
       workerId,
       disruptionId,
       amount: claimAmount,
@@ -1818,16 +2051,36 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       fraudVerdict: verdict,
       autoTriggered: false,
       triggerSource: 'admin',
-      payoutMethod: razorpayPayoutId && !razorpayPayoutId.startsWith('rz_sim_') ? 'razorpay' : (flowType === 'A' ? 'upi' : 'upi_queued'),
+      payoutMethod,
       payoutId: razorpayPayoutId || undefined,
       payoutStatus,
       payoutTimestamp: claimStatus === 'paid' ? new Date() : undefined,
       txHash,
+      upiId: payoutUpiId,
       workerName: worker.fullName,
       workerEmail: worker.email,
       disruptionType,
     });
     await claim.save();
+
+    // Emit pipeline:complete event
+    emitPipelineEvent(workerId, 'pipeline:complete', {
+      claimId: claimTxId,
+      claimStatus,
+      payoutMethod,
+      payoutStatus,
+      payoutId: razorpayPayoutId,
+      txHash,
+      explorerUrl,
+      fraudScore,
+      fraudVerdict: verdict,
+      amount: claimAmount,
+      workerName: worker.fullName,
+      disruptionType,
+      triggerSource: 'admin',
+      flow: flowType,
+      timestamp: new Date().toISOString(),
+    });
 
     // Build disruption event name for display
     const eventNames = {
@@ -1921,25 +2174,22 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
       });
     }
 
-    // Update Liquidity Pool if paid
-    if (claimStatus === 'paid') {
-      await LiquidityPool.findOneAndUpdate(
-        { poolId: 'main_pool' },
-        { 
-          $inc: { totalPayouts: claimAmount, totalClaims: 1 },
-          $set: { lastUpdated: new Date() },
-          $push: { transactions: { $each: [{ type: 'payout', amount: claimAmount, workerId }], $slice: -100 } }
-        },
-        { upsert: true }
-      );
-    }
+    // Pool deduction already handled by payoutService.executePayout()
 
-    console.log(`✅ Disruption processed: Flow ${flowType} | Status: ${claimStatus} | Amount: ₹${claimAmount}${flowType === 'B' ? ' | SMS: ' + (smsSent ? 'SENT' : 'SIMULATED') : ''}`);
+    console.log(`✅ Disruption processed: Flow ${flowType} | Status: ${claimStatus} | Amount: ₹${claimAmount} | UPI: ${payoutUpiId}${flowType === 'B' ? ' | SMS: ' + (smsSent ? 'SENT' : 'SIMULATED') : ''}`);
 
     res.json({
-      message: `Disruption triggered for ${worker.fullName}. ${claimStatus === 'paid' ? 'Payout processed.' : 'Pending verification.'} [Flow ${flowType}]`,
+      message: `Disruption triggered for ${worker.fullName}. ${claimStatus === 'paid' ? `₹${claimAmount} paid from liquidity pool → ${payoutUpiId}` : 'Pending verification.'} [Flow ${flowType}]`,
       disruption: activeDisruption,
       flow: flowType,
+      payout: {
+        method: payoutMethod,
+        payoutId: razorpayPayoutId,
+        upiId: payoutUpiId,
+        amount: claimAmount,
+        status: payoutStatus,
+        fromPool: true,
+      },
       flowDescription: flowType === 'A' 
         ? 'Happy Path — Worker online with fresh heartbeat. Instant payout + real-time dashboard alert.'
         : 'Offline Edge Case — Worker connection lost. Payout processed on Last Known State + SMS sent.',
@@ -1948,6 +2198,257 @@ app.post('/api/admin/trigger-disruption', authenticateToken, async (req, res) =>
   } catch (err) {
     console.error('Trigger disruption error:', err);
     res.status(500).json({ error: 'Failed to trigger disruption', details: err.message });
+  }
+});
+
+// ==================== RAZORPAY WEBHOOK ====================
+// Handles payment.captured & payment.failed events from Razorpay standard gateway.
+// Verifies premium payments server-side and emits real-time Socket.io events.
+app.post('/api/razorpay/webhook', async (req, res) => {
+  try {
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers['x-razorpay-signature'];
+
+    // Verify webhook signature
+    if (webhookSecret && signature) {
+      const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      const expectedSignature = createHmac('sha256', webhookSecret)
+        .update(body)
+        .digest('hex');
+      if (signature !== expectedSignature) {
+        console.warn('🔴 [Webhook] Invalid Razorpay signature — rejecting');
+        return res.status(400).json({ error: 'Invalid signature' });
+      }
+    }
+
+    const payload = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    const event = payload.event;
+    const paymentEntity = payload.payload?.payment?.entity;
+
+    if (!paymentEntity) {
+      return res.status(200).json({ received: true, skipped: 'no payment entity' });
+    }
+
+    const paymentId = paymentEntity.id;
+    const orderId = paymentEntity.order_id;
+    const status = paymentEntity.status;        // captured | failed
+    const amount = paymentEntity.amount / 100;  // paise → ₹
+    const method = paymentEntity.method;        // upi | card | netbanking | wallet
+    const vpa = paymentEntity.vpa || null;      // UPI VPA if paid via UPI
+    const email = paymentEntity.email;
+    const contact = paymentEntity.contact;
+
+    console.log(`🔔 [Webhook] ${event} — Payment ${paymentId} | Order: ${orderId} | ₹${amount} | ${method} | Status: ${status}`);
+
+    if (event === 'payment.captured') {
+      // ── Premium Payment Confirmed ──
+      // Find the user who made this payment (by orderId in their subscription)
+      const user = await User.findOne({
+        $or: [
+          { 'activeSubscription.orderId': orderId },
+          { 'activeSubscription.paymentId': paymentId },
+        ],
+      });
+
+      if (user) {
+        // Mark subscription as server-verified
+        await User.findByIdAndUpdate(user._id, {
+          $set: {
+            'activeSubscription.webhookVerified': true,
+            'activeSubscription.webhookVerifiedAt': new Date(),
+            'activeSubscription.paymentMethod': method,
+            'activeSubscription.vpa': vpa,
+          },
+        });
+
+        console.log(`✅ [Webhook] Premium payment verified for ${user.fullName} (${user.email}) — ₹${amount} via ${method}`);
+
+        // Emit real-time confirmation to worker + admin
+        emitPipelineEvent(user._id.toString(), 'payment:confirmed', {
+          stage: 'payment_captured',
+          paymentId,
+          orderId,
+          amount,
+          method,
+          vpa,
+          workerName: user.fullName,
+          timestamp: new Date().toISOString(),
+        });
+
+        // Push notification
+        await User.findByIdAndUpdate(user._id, {
+          $push: {
+            notifications: {
+              type: 'upi_receipt',
+              title: '✅ Payment Confirmed',
+              message: `₹${amount} premium payment verified by Razorpay${vpa ? ` (UPI: ${vpa})` : ''}. Your coverage is active!`,
+              amount,
+              read: false,
+              createdAt: new Date(),
+            },
+          },
+        });
+
+        // Log premium on-chain (fire-and-forget)
+        try {
+          await web3Service.recordPremiumOnChain(
+            user._id.toString(),
+            Math.round(amount * 100),
+            user.activeSubscription?.planType || 'standard'
+          );
+          console.log(`[Web3] Premium recorded on-chain for ${user.fullName}`);
+        } catch (e) {
+          console.warn('[Web3] Premium on-chain log failed (non-fatal):', e.message);
+        }
+      } else {
+        console.warn(`⚠️ [Webhook] No user found for order ${orderId}`);
+      }
+
+    } else if (event === 'payment.failed') {
+      // ── Payment Failed ──
+      const errorCode = paymentEntity.error_code;
+      const errorDesc = paymentEntity.error_description;
+
+      console.warn(`🔴 [Webhook] Payment failed: ${errorCode} — ${errorDesc}`);
+
+      const user = await User.findOne({ 'activeSubscription.orderId': orderId });
+      if (user) {
+        emitPipelineEvent(user._id.toString(), 'payment:failed', {
+          stage: 'payment_failed',
+          paymentId,
+          orderId,
+          amount,
+          errorCode,
+          errorDesc,
+          workerName: user.fullName,
+          timestamp: new Date().toISOString(),
+        });
+
+        await User.findByIdAndUpdate(user._id, {
+          $push: {
+            notifications: {
+              type: 'payout',
+              title: '❌ Payment Failed',
+              message: `Your ₹${amount} payment could not be processed. ${errorDesc || 'Please try again.'}`,
+              amount,
+              read: false,
+              createdAt: new Date(),
+            },
+          },
+        });
+      }
+    }
+
+    res.status(200).json({ received: true, event, paymentId });
+  } catch (err) {
+    console.error('🔴 [Webhook] Error:', err.message);
+    res.status(200).json({ received: true, error: err.message }); // Always 200 to prevent Razorpay retries
+  }
+});
+
+// ==================== PAYOUT MANAGEMENT ENDPOINTS ====================
+
+// Get liquidity pool status
+app.get('/api/pool/status', authenticateToken, async (req, res) => {
+  try {
+    const pool = await LiquidityPool.findOne({ poolId: 'main_pool' }).lean();
+    if (!pool) {
+      return res.json({
+        poolId: 'main_pool',
+        totalBalance: 0,
+        totalContributions: 0,
+        totalPayouts: 0,
+        totalClaims: 0,
+        totalWorkers: 0,
+        recentTransactions: [],
+      });
+    }
+    res.json({
+      poolId: pool.poolId,
+      totalBalance: pool.totalBalance || 0,
+      totalContributions: pool.totalContributions || 0,
+      totalPayouts: pool.totalPayouts || 0,
+      totalClaims: pool.totalClaims || 0,
+      totalWorkers: pool.totalWorkers || 0,
+      lastUpdated: pool.lastUpdated,
+      recentTransactions: (pool.transactions || []).slice(-20).reverse(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retry a failed payout
+app.post('/api/admin/retry-payout', authenticateToken, async (req, res) => {
+  try {
+    const { claimId } = req.body;
+    if (!claimId) return res.status(400).json({ error: 'Missing claimId' });
+
+    const claim = await Claim.findOne({ transactionId: claimId });
+    if (!claim) return res.status(404).json({ error: 'Claim not found' });
+
+    if (claim.status !== 'Payment_Failed_Retrying') {
+      return res.status(400).json({ error: `Claim status is "${claim.status}" — can only retry failed payouts` });
+    }
+
+    const worker = await User.findById(claim.workerId);
+    if (!worker) return res.status(404).json({ error: 'Worker not found' });
+
+    const payoutResult = await payoutService.retryPayout({
+      worker,
+      amount: claim.amount,
+      disruptionType: claim.disruptionType,
+      disruptionId: claim.disruptionId,
+      LiquidityPool,
+      claimId: claim.transactionId,
+    });
+
+    if (payoutResult.success) {
+      await Claim.findOneAndUpdate(
+        { transactionId: claimId },
+        {
+          status: 'paid',
+          payoutId: payoutResult.payoutId,
+          payoutMethod: payoutResult.payoutMethod,
+          payoutStatus: payoutResult.payoutStatus,
+          payoutTimestamp: new Date(),
+        }
+      );
+
+      // Notify worker
+      await User.findByIdAndUpdate(claim.workerId, {
+        $push: {
+          notifications: {
+            type: 'upi_receipt',
+            title: '💚 PAYOUT RETRY SUCCESSFUL',
+            message: `₹${claim.amount} has been credited to your UPI. Payout ID: ${payoutResult.payoutId}`,
+            amount: claim.amount,
+            read: false,
+            createdAt: new Date(),
+          },
+        },
+      });
+
+      res.json({ success: true, message: `Retry successful — ₹${claim.amount} paid`, payout: payoutResult });
+    } else {
+      res.json({ success: false, message: payoutResult.message, payout: payoutResult });
+    }
+  } catch (err) {
+    console.error('Retry payout error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get all failed payouts
+app.get('/api/admin/failed-payouts', authenticateToken, async (req, res) => {
+  try {
+    const failedClaims = await Claim.find({ status: 'Payment_Failed_Retrying' })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+    res.json({ claims: failedClaims, count: failedClaims.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2177,205 +2678,312 @@ function calculateClaimAmount(disruptionType, subscriptionAmount) {
 
 // ==================== ADMIN COMMAND CENTER ENDPOINTS ====================
 
+// ─── Autonomous Trigger Scan (shared logic for cron + admin endpoint) ───
+async function runTriggerScan(lat = 17.385, lng = 78.4867) {
+  console.log('\n🔍 === AUTOMATED TRIGGER SCAN ===');
+
+  // Step 1: Call ML Engine trigger scan
+  let scanResult;
+  const mlResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/trigger-scan`, {
+    lat, lng,
+  }, { timeout: 20000 });
+  scanResult = mlResponse.data;
+
+  const activeTriggers = (scanResult.triggers || []).filter(t => t.active);
+  console.log(`⚡ Active triggers: ${activeTriggers.length}/${scanResult.triggers?.length || 0}`);
+
+  if (activeTriggers.length === 0) {
+    return { message: 'No active disruptions detected', scan: scanResult, claimsCreated: 0 };
+  }
+
+  // Step 2: Find all online workers with active subscriptions
+  // Enforce 48-hour lockout: only include workers whose coverage has already started
+  const now = new Date();
+  const onlineWorkers = await User.find({
+    userType: 'worker',
+    policyActive: true,
+    'activeSubscription.status': 'active',
+    $or: [
+      { 'activeSubscription.coverageStartsAt': { $lte: now } },
+      { 'activeSubscription.coverageStartsAt': { $exists: false } },
+    ],
+  }).lean();
+
+  console.log(`👥 Online workers with active policies: ${onlineWorkers.length}`);
+
+  // Step 3: For each active trigger, create disruptions + claims
+  const results = [];
+  for (const trigger of activeTriggers) {
+    const triggerTypeMap = {
+      heavy_rain: 'monsoon',
+      heatwave: 'heatwave',
+      pollution: 'pollution',
+      curfew: 'curfew',
+      platform_outage: 'strike',
+    };
+    const eventType = triggerTypeMap[trigger.id] || 'monsoon';
+
+    const disruption = new Disruption({
+      disruptionId: `auto_${trigger.id}_${Date.now()}`,
+      eventType,
+      severity: trigger.severity || 3,
+      affectedWorkers: onlineWorkers.map(w => w._id.toString()),
+      status: 'active',
+    });
+    await disruption.save();
+
+    for (const worker of onlineWorkers) {
+      // ── 90-Day Eligibility Gate (SS Code 2020 §6) ──
+      const subStart = worker.activeSubscription?.startDate
+        ? new Date(worker.activeSubscription.startDate)
+        : new Date(worker.createdAt);
+      const activeDays = Math.floor((Date.now() - subStart.getTime()) / (1000 * 60 * 60 * 24));
+      const bypassEligibility = process.env.BYPASS_ELIGIBILITY_CHECK === 'true';
+      if (activeDays < 90 && !bypassEligibility) {
+        console.warn(`🚫 [AUTO-SCAN] Skipping ${worker.fullName}: ${activeDays} active day(s), need 90 (SS Code 2020)`);
+        continue;
+      }
+
+      const claimAmount = calculateClaimAmount(trigger.id, worker.activeSubscription?.amount);
+      const workerId = worker._id.toString();
+      const claimTxId = `txn_${Date.now()}_${workerId.slice(-6)}`;
+
+      // ── STAGE 1: Emit trigger detected event ──
+      emitPipelineEvent(workerId, 'pipeline:stage', {
+        stage: 'trigger_detected',
+        trigger: trigger.id,
+        triggerName: trigger.name,
+        severity: trigger.severity,
+        workerName: worker.fullName,
+        claimAmount,
+        timestamp: new Date().toISOString(),
+      });
+
+      // ── STAGE 2: Fraud Check (Isolation Forest ML) ──
+      let fraudResult = { final_anomaly_score: 0, fraud_verdict: 'auto_approve', recommended_action: { action: 'auto_approve' } };
+      try {
+        const workerLat = worker.lastKnownLocation?.lat || lat;
+        const workerLng = worker.lastKnownLocation?.lng || lng;
+        const fraudResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/fraud-check`, {
+          worker_id: workerId,
+          lat: workerLat, lng: workerLng,
+          platform_status: 'active',
+        }, { timeout: 10000 });
+        fraudResult = fraudResponse.data;
+      } catch (e) {
+        console.warn(`⚠️ Fraud check failed for ${worker.fullName}:`, e.message);
+      }
+
+      const fraudScore = fraudResult.final_anomaly_score || 0;
+      const fraudVerdict = fraudResult.fraud_verdict || 'auto_approve';
+      const needsVerification = fraudVerdict === 'micro_verify';
+
+      emitPipelineEvent(workerId, 'pipeline:stage', {
+        stage: 'fraud_check',
+        fraudScore,
+        fraudVerdict,
+        workerName: worker.fullName,
+        claimAmount,
+        timestamp: new Date().toISOString(),
+      });
+
+      let claimStatus = 'approved';
+      let payoutStatus = 'pending';
+      let razorpayPayoutId = null;
+      let payoutMethod = 'simulated';
+      let txHash = null;
+      let explorerUrl = null;
+
+      if (fraudVerdict === 'reject') {
+        claimStatus = 'rejected';
+        payoutStatus = 'failed';
+      } else if (fraudVerdict === 'micro_verify') {
+        claimStatus = 'micro_verify';
+        payoutStatus = 'pending';
+      } else {
+        // ── STAGE 3: Payout via payoutService (Razorpay or simulated) ──
+        const payoutResult = await payoutService.executePayout({
+          worker,
+          amount: claimAmount,
+          disruptionType: eventType,
+          disruptionId: disruption.disruptionId,
+          LiquidityPool,
+          claimId: claimTxId,
+        });
+
+        if (payoutResult.success) {
+          razorpayPayoutId = payoutResult.payoutId;
+          payoutMethod = payoutResult.payoutMethod;
+          claimStatus = 'paid';
+          payoutStatus = payoutResult.payoutStatus;
+        } else {
+          claimStatus = 'Payment_Failed_Retrying';
+          payoutStatus = 'failed';
+        }
+
+        emitPipelineEvent(workerId, 'pipeline:stage', {
+          stage: 'payout_initiated',
+          payoutMethod,
+          payoutId: razorpayPayoutId,
+          payoutStatus,
+          amount: claimAmount,
+          workerName: worker.fullName,
+          timestamp: new Date().toISOString(),
+        });
+
+        // ── STAGE 4: Web3 On-Chain Logging ──
+        if (claimStatus === 'paid') {
+          try {
+            const disruptionResult = await web3Service.registerDisruptionOnChain(
+              worker.city || 'Mumbai', eventType, 70
+            );
+            let onChainEventId = null;
+            if (disruptionResult.success) {
+              onChainEventId = disruptionResult.onChainEventId;
+            }
+            const payoutOnChain = await web3Service.recordPayoutOnChain(
+              workerId,
+              worker.email,
+              Math.round(claimAmount * 100),
+              onChainEventId,
+              razorpayPayoutId && !razorpayPayoutId.startsWith('rz_sim_') ? 'razorpay' : 'simulated',
+              razorpayPayoutId || ''
+            );
+            txHash = payoutOnChain.txHash || `0x${randomBytes(32).toString('hex')}`;
+            explorerUrl = payoutOnChain.explorerUrl || null;
+          } catch (web3Err) {
+            console.warn('[Web3] On-chain logging failed (non-fatal):', web3Err.message);
+            txHash = `0x${randomBytes(32).toString('hex')}`;
+          }
+
+          emitPipelineEvent(workerId, 'pipeline:stage', {
+            stage: 'blockchain_logged',
+            txHash,
+            explorerUrl,
+            workerName: worker.fullName,
+            claimAmount,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+
+      const claim = new Claim({
+        transactionId: claimTxId,
+        workerId,
+        disruptionId: disruption.disruptionId,
+        amount: claimAmount,
+        status: claimStatus,
+        fraudScore,
+        fraudVerdict,
+        fraudDetails: fraudResult,
+        autoTriggered: true,
+        triggerSource: trigger.id === 'heavy_rain' ? 'weather' : trigger.id,
+        requiresMicroVerification: needsVerification,
+        microVerificationStatus: needsVerification ? 'pending' : undefined,
+        payoutMethod,
+        payoutId: razorpayPayoutId || undefined,
+        payoutStatus,
+        payoutTimestamp: claimStatus === 'paid' ? new Date() : undefined,
+        txHash,
+        workerName: worker.fullName,
+        workerEmail: worker.email,
+        disruptionType: eventType,
+      });
+      await claim.save();
+
+      await User.findByIdAndUpdate(worker._id, {
+        $set: {
+          activeDisruption: {
+            disruptionId: disruption.disruptionId,
+            eventType,
+            severity: trigger.severity,
+            claimAmount,
+            claimable: true,
+            triggeredBy: 'automated',
+            triggeredAt: new Date().toISOString(),
+            status: claimStatus,
+            txHash,
+          },
+        },
+      });
+
+      // ── STAGE 5: Emit final pipeline complete event ──
+      emitPipelineEvent(workerId, 'pipeline:complete', {
+        claimId: claimTxId,
+        claimStatus,
+        payoutMethod,
+        payoutStatus,
+        payoutId: razorpayPayoutId,
+        txHash,
+        explorerUrl,
+        fraudScore,
+        fraudVerdict,
+        amount: claimAmount,
+        workerName: worker.fullName,
+        disruptionType: eventType,
+        triggerSource: trigger.id,
+        timestamp: new Date().toISOString(),
+      });
+
+      if (claimStatus === 'paid') {
+        await User.findByIdAndUpdate(worker._id, {
+          $push: {
+            notifications: {
+              type: 'payout',
+              title: '💰 Payout Received!',
+              message: `₹${claimAmount} has been credited to your account for ${trigger.name} disruption. Stay safe!`,
+              amount: claimAmount,
+              read: false,
+              createdAt: new Date(),
+            },
+          },
+        });
+      } else if (claimStatus === 'micro_verify') {
+        await User.findByIdAndUpdate(worker._id, {
+          $push: {
+            notifications: {
+              type: 'claim',
+              title: '📸 Verification Needed',
+              message: `Your claim for ₹${claimAmount} requires a quick photo verification. Please submit a timestamped photo.`,
+              amount: claimAmount,
+              read: false,
+              createdAt: new Date(),
+            },
+          },
+        });
+      }
+
+      results.push({
+        worker: worker.fullName,
+        trigger: trigger.name,
+        claimAmount,
+        fraudScore,
+        fraudVerdict,
+        claimStatus,
+        payoutStatus,
+        payoutMethod,
+        txHash,
+      });
+    }
+  }
+
+  console.log(`✅ Trigger scan complete: ${results.length} claims processed`);
+
+  return {
+    message: `Trigger scan complete — ${activeTriggers.length} disruptions detected, ${results.length} claims processed`,
+    scan: scanResult,
+    activeTriggers: activeTriggers.length,
+    claimsCreated: results.length,
+    claims: results,
+  };
+}
+
 // Admin: Run Automated Trigger Scan (checks all 5 triggers + creates claims)
 app.post('/api/admin/run-trigger-scan', authenticateToken, async (req, res) => {
   try {
     const { lat, lng } = req.body;
-
-    console.log('\n🔍 === AUTOMATED TRIGGER SCAN ===' );
-
-    // Step 1: Call ML Engine trigger scan
-    let scanResult;
-    try {
-      const mlResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/trigger-scan`, {
-        lat: lat || 17.385,
-        lng: lng || 78.4867,
-      }, { timeout: 20000 });
-      scanResult = mlResponse.data;
-    } catch (e) {
-      return res.status(500).json({ error: 'ML Engine unreachable for trigger scan', details: e.message });
-    }
-
-    const activeTriggers = (scanResult.triggers || []).filter(t => t.active);
-    console.log(`⚡ Active triggers: ${activeTriggers.length}/${scanResult.triggers?.length || 0}`);
-
-    if (activeTriggers.length === 0) {
-      return res.json({
-        message: 'No active disruptions detected',
-        scan: scanResult,
-        claimsCreated: 0,
-      });
-    }
-
-    // Step 2: Find all online workers with active subscriptions
-    const onlineWorkers = await User.find({
-      userType: 'worker',
-      policyActive: true,
-      'activeSubscription.status': 'active',
-    }).lean();
-
-    console.log(`👥 Online workers with active policies: ${onlineWorkers.length}`);
-
-    // Step 3: For each active trigger, create disruptions + claims
-    const results = [];
-    for (const trigger of activeTriggers) {
-      const triggerTypeMap = {
-        heavy_rain: 'monsoon',
-        heatwave: 'heatwave',
-        pollution: 'pollution',
-        curfew: 'curfew',
-        platform_outage: 'strike',
-      };
-      const eventType = triggerTypeMap[trigger.id] || 'monsoon';
-
-      // Create disruption record
-      const disruption = new Disruption({
-        disruptionId: `auto_${trigger.id}_${Date.now()}`,
-        eventType,
-        severity: trigger.severity || 3,
-        affectedWorkers: onlineWorkers.map(w => w._id.toString()),
-        status: 'active',
-      });
-      await disruption.save();
-
-      // Create claims for each affected worker
-      for (const worker of onlineWorkers) {
-        const claimAmount = calculateClaimAmount(trigger.id, worker.activeSubscription?.amount);
-
-        // Run fraud check via ML engine
-        let fraudResult = { final_anomaly_score: 0, fraud_verdict: 'auto_approve', recommended_action: { action: 'auto_approve' } };
-        try {
-          const fraudResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/fraud-check`, {
-            worker_id: worker._id.toString(),
-            lat: lat || 17.385,
-            lng: lng || 78.4867,
-            platform_status: 'active',
-          }, { timeout: 10000 });
-          fraudResult = fraudResponse.data;
-        } catch (e) {
-          console.warn(`⚠️ Fraud check failed for ${worker.fullName}:`, e.message);
-        }
-
-        const fraudScore = fraudResult.final_anomaly_score || 0;
-        const fraudVerdict = fraudResult.fraud_verdict || 'auto_approve';
-        const needsVerification = fraudVerdict === 'micro_verify';
-
-        // Determine claim status based on fraud verdict
-        let claimStatus = 'approved';
-        let payoutStatus = 'pending';
-        if (fraudVerdict === 'reject') {
-          claimStatus = 'rejected';
-          payoutStatus = 'failed';
-        } else if (fraudVerdict === 'micro_verify') {
-          claimStatus = 'micro_verify';
-          payoutStatus = 'pending';
-        } else {
-          // Auto-approve: simulate instant payout
-          claimStatus = 'paid';
-          payoutStatus = 'completed';
-        }
-
-        const claim = new Claim({
-          transactionId: `txn_${Date.now()}_${worker._id.toString().slice(-6)}`,
-          workerId: worker._id.toString(),
-          disruptionId: disruption.disruptionId,
-          amount: claimAmount,
-          status: claimStatus,
-          fraudScore,
-          fraudVerdict,
-          fraudDetails: fraudResult,
-          autoTriggered: true,
-          triggerSource: trigger.id === 'heavy_rain' ? 'weather' : trigger.id,
-          requiresMicroVerification: needsVerification,
-          microVerificationStatus: needsVerification ? 'pending' : undefined,
-          payoutMethod: 'simulated',
-          payoutStatus,
-          payoutTimestamp: claimStatus === 'paid' ? new Date() : undefined,
-          workerName: worker.fullName,
-          workerEmail: worker.email,
-          disruptionType: eventType,
-        });
-        await claim.save();
-
-        // Set active disruption on worker
-        await User.findByIdAndUpdate(worker._id, {
-          $set: {
-            activeDisruption: {
-              disruptionId: disruption.disruptionId,
-              eventType,
-              severity: trigger.severity,
-              claimAmount,
-              claimable: true,
-              triggeredBy: 'automated',
-              triggeredAt: new Date().toISOString(),
-              status: claimStatus,
-            },
-          },
-        });
-
-        // Send payout notification to user
-        if (claimStatus === 'paid') {
-          await User.findByIdAndUpdate(worker._id, {
-            $push: {
-              notifications: {
-                type: 'payout',
-                title: '💰 Payout Received!',
-                message: `₹${claimAmount} has been credited to your account for ${trigger.name} disruption. Stay safe!`,
-                amount: claimAmount,
-                read: false,
-                createdAt: new Date(),
-              },
-            },
-          });
-        } else if (claimStatus === 'micro_verify') {
-          await User.findByIdAndUpdate(worker._id, {
-            $push: {
-              notifications: {
-                type: 'claim',
-                title: '📸 Verification Needed',
-                message: `Your claim for ₹${claimAmount} requires a quick photo verification. Please submit a timestamped photo.`,
-                amount: claimAmount,
-                read: false,
-                createdAt: new Date(),
-              },
-            },
-          });
-        }
-
-        // Update liquidity pool
-        if (claimStatus === 'paid') {
-          await LiquidityPool.findOneAndUpdate(
-            { poolId: 'main_pool' },
-            {
-              $inc: { totalPayouts: claimAmount, totalClaims: 1 },
-              $set: { lastUpdated: new Date() },
-              $push: { transactions: { $each: [{ type: 'payout', amount: claimAmount, workerId: worker._id.toString(), claimId: claim.transactionId, timestamp: new Date() }], $slice: -100 } },
-            },
-            { upsert: true, new: true }
-          );
-        }
-
-        results.push({
-          worker: worker.fullName,
-          trigger: trigger.name,
-          claimAmount,
-          fraudScore,
-          fraudVerdict,
-          claimStatus,
-          payoutStatus,
-        });
-      }
-    }
-
-    console.log(`✅ Trigger scan complete: ${results.length} claims processed`);
-
-    res.json({
-      message: `Trigger scan complete — ${activeTriggers.length} disruptions detected, ${results.length} claims processed`,
-      scan: scanResult,
-      activeTriggers: activeTriggers.length,
-      claimsCreated: results.length,
-      claims: results,
-    });
+    const result = await runTriggerScan(lat || 17.385, lng || 78.4867);
+    res.json(result);
   } catch (err) {
     console.error('Trigger scan error:', err);
     res.status(500).json({ error: 'Trigger scan failed', details: err.message });
@@ -2493,9 +3101,30 @@ app.get('/api/admin/analytics', authenticateToken, async (req, res) => {
     const avgFraudScore = allClaims.length > 0 ? Math.round(allClaims.reduce((sum, c) => sum + (c.fraudScore || 0), 0) / allClaims.length) : 0;
     const fraudFlagged = allClaims.filter(c => (c.fraudScore || 0) > 70).length;
 
-    // Subscription revenue
+    // Subscription revenue — from Subscription model + User activeSubscription
     const subscriptions = await Subscription.find({ isActive: true }).lean();
-    const totalPremiumRevenue = subscriptions.reduce((sum, s) => sum + (s.premiumAmount || 0), 0);
+    const subModelRevenue = subscriptions.reduce((sum, s) => sum + (s.premiumAmount || 0), 0);
+    const userSubRevenue = await User.aggregate([
+      { $match: { 'activeSubscription.amount': { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$activeSubscription.amount' } } },
+    ]);
+    const totalPremiumRevenue = Math.max(subModelRevenue, userSubRevenue[0]?.total || 0);
+
+    // Loss Ratio (Burning Cost Rate) — BCR = totalPayouts / totalPremiums
+    const poolContributions = pool?.totalContributions || (totalPremiumRevenue * 0.65);
+    const poolPayouts = pool?.totalPayouts || totalPaidAmount;
+    const lossRatio = poolContributions > 0
+      ? Math.round((poolPayouts / poolContributions) * 100) / 100
+      : 0;
+
+    // Pool Health classification
+    const poolBalance = pool?.totalBalance || (totalPremiumRevenue - totalPaidAmount);
+    const reserveRatio = poolContributions > 0 ? poolBalance / poolContributions : 1;
+    let poolHealthStatus = 'critical';
+    let poolHealthColor = 'red';
+    if (reserveRatio > 0.5) { poolHealthStatus = 'healthy'; poolHealthColor = 'green'; }
+    else if (reserveRatio > 0.25) { poolHealthStatus = 'adequate'; poolHealthColor = 'amber'; }
+    else if (reserveRatio > 0.1) { poolHealthStatus = 'warning'; poolHealthColor = 'orange'; }
 
     res.json({
       workers: { total: totalWorkers, active: activeWorkers, subscribed: subscriptions.length },
@@ -2509,8 +3138,21 @@ app.get('/api/admin/analytics', authenticateToken, async (req, res) => {
       financials: {
         totalPremiumRevenue,
         totalPayouts: totalPaidAmount,
-        poolBalance: pool?.totalBalance || (totalPremiumRevenue - totalPaidAmount),
+        poolBalance: Math.max(0, poolBalance),
         netMargin: totalPremiumRevenue - totalPaidAmount,
+        poolContributions: Math.round(poolContributions * 100) / 100,
+        poolPayouts: Math.round(poolPayouts * 100) / 100,
+        lossRatio,
+        reserveRatio: Math.round(reserveRatio * 100) / 100,
+        poolHealth: {
+          status: poolHealthStatus,
+          color: poolHealthColor,
+          reserveRatio: Math.round(reserveRatio * 100) / 100,
+          message: poolHealthStatus === 'healthy' ? 'Pool is well-capitalized'
+            : poolHealthStatus === 'adequate' ? 'Pool reserves are adequate'
+            : poolHealthStatus === 'warning' ? 'Pool reserves low — monitor closely'
+            : 'Pool critically low — suspend new enrollments',
+        },
       },
       fraud: {
         avgFraudScore,
@@ -2690,10 +3332,45 @@ app.post('/api/admin/black-swan-simulation', authenticateToken, async (req, res)
   }
 });
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`\n🚀 AASARA CORE PROCESSING GATEWAY`);
   console.log(`📍 Active on port ${PORT}`);
   console.log(`📦 Database: MongoDB Atlas`);
+  console.log(`🔌 Socket.io: Real-time pipeline events READY`);
   console.log(`🛡️ Fraud Detection, Trigger Automation, Parametric Claims READY`);
-  console.log(`✅ Telemetry Sync, Disruption Triggers, Anomaly Detection, Payout Processing READY\n`);
+  console.log(`✅ Telemetry Sync, Disruption Triggers, Anomaly Detection, Payout Processing READY`);
+
+  // ─── Autonomous Trigger Scan — every 15 minutes ───
+  cron.schedule('*/15 * * * *', async () => {
+    console.log(`\n⏰ [CRON] Autonomous trigger scan starting — ${new Date().toISOString()}`);
+    try {
+      const result = await runTriggerScan();
+      console.log(`⏰ [CRON] Scan result: ${result.message}`);
+    } catch (err) {
+      console.error('⏰ [CRON] Trigger scan failed:', err.message);
+    }
+  });
+  console.log(`⏰ Cron: Autonomous trigger scan scheduled every 15 minutes`);
+
+  // ─── 48-Hour Lockout Activation — every 15 minutes ───
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      const now = new Date();
+      const result = await User.updateMany(
+        {
+          policyActive: false,
+          onboardingCompleted: true,
+          'activeSubscription.coverageStartsAt': { $lte: now },
+          'activeSubscription.status': 'active',
+        },
+        { $set: { policyActive: true } }
+      );
+      if (result.modifiedCount > 0) {
+        console.log(`⏰ [CRON] 48h lockout expired → activated ${result.modifiedCount} worker(s)`);
+      }
+    } catch (err) {
+      console.error('⏰ [CRON] Lockout activation failed:', err.message);
+    }
+  });
+  console.log(`⏰ Cron: 48-hour lockout activation check scheduled every 15 minutes\n`);
 });

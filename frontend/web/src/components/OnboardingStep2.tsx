@@ -26,14 +26,16 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
   // Plan selection
   const [selectedPlan, setSelectedPlan] = useState<'basic' | 'premium'>('basic');
 
+  // DPDP Act 2023 Consent
+  const [consentGPS, setConsentGPS] = useState(false);
+  const [consentUPI, setConsentUPI] = useState(false);
+  const [consentPlatform, setConsentPlatform] = useState(false);
+  const allConsentsGiven = consentGPS && consentUPI && consentPlatform;
+
   // Geolocation
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [locationStatus, setLocationStatus] = useState<string>('detecting');
+  const [locationStatus, setLocationStatus] = useState<string>('waiting_consent');
   const [analysisStep, setAnalysisStep] = useState<string>('');
-
-  useEffect(() => {
-    requestGeolocation();
-  }, []);
 
   useEffect(() => {
     const today = new Date();
@@ -60,15 +62,45 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(coords);
         setLocationStatus('detected');
+        setConsentGPS(true);
+        // Persist GPS to backend
+        saveLocationToBackend(coords.lat, coords.lng);
       },
       () => {
         setLocationStatus('denied');
-        setUserLocation({ lat: 17.385, lng: 78.4867 });
+        setConsentGPS(false);
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
+  }
+
+  async function saveLocationToBackend(lat: number, lng: number) {
+    try {
+      const token = localStorage.getItem('authToken');
+      if (!token) return;
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/user/save-location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ lat, lng }),
+      });
+    } catch (e) {
+      console.warn('Failed to save location to backend:', e);
+    }
+  }
+
+  function handleGPSConsent() {
+    if (!consentGPS) {
+      // User is checking the box — request real GPS permission
+      requestGeolocation();
+    } else {
+      // User is unchecking — revoke consent, clear location
+      setConsentGPS(false);
+      setUserLocation(null);
+      setLocationStatus('waiting_consent');
+    }
   }
 
   async function fetchMLPremiumQuote(start: string, end: string, lat: number, lng: number) {
@@ -134,6 +166,8 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
 
       const options = {
         key: orderData.key, amount: orderData.amount, currency: 'INR', order_id: orderData.orderId,
+        name: 'Aasara AI',
+        description: `${selectedPlan === 'premium' ? 'Total Guard' : 'Basic Shield'} — Weekly Plan`,
         handler: async (response: any) => {
           try {
             const verifyResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5001'}/api/onboarding/verify-payment`, {
@@ -151,7 +185,7 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
           } catch (err: any) { setError(`Verification failed: ${err.message}`); setPaying(false); }
         },
         prefill: { name: user?.fullName || '', email: user?.email || '', contact: (user as any)?.phoneNumber || '' },
-        theme: { color: selectedPlan === 'premium' ? '#8B5CF6' : '#3B82F6' },
+        theme: { color: selectedPlan === 'premium' ? '#8B5CF6' : '#0d9488' },
       };
       const rzp = new (window as any).Razorpay(options);
       rzp.open();
@@ -163,8 +197,12 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
       <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
         className="bg-green-50 border border-green-200 rounded-xl p-8 text-center shadow-sm">
         <CheckCircle2 className="w-16 h-16 text-green-500 mx-auto mb-4" />
-        <h2 className="text-2xl font-bold text-green-700 mb-2">✅ Subscription Activated!</h2>
-        <p className="text-slate-600">Your {selectedPlan === 'premium' ? 'Total Guard' : 'Basic Shield'} plan is now active.</p>
+        <h2 className="text-2xl font-bold text-green-700 mb-2">✅ Payment Confirmed!</h2>
+        <p className="text-slate-600 mb-3">Your {selectedPlan === 'premium' ? 'Total Guard' : 'Basic Shield'} plan is enrolled.</p>
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mt-4">
+          <p className="text-amber-800 font-semibold text-sm">⏳ Coverage activates in 48 hours</p>
+          <p className="text-amber-600 text-xs mt-1">Per Social Security Code, 2020 — a 48-hour lockout prevents adverse selection (buying insurance during an active disaster).</p>
+        </div>
       </motion.div>
     );
   }
@@ -192,6 +230,7 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
         className={`rounded-xl border p-4 space-y-3 ${
           locationStatus === 'detected' ? 'bg-green-50 border-green-200'
             : locationStatus === 'denied' ? 'bg-amber-50 border-amber-200'
+            : locationStatus === 'waiting_consent' ? 'bg-blue-50 border-blue-200'
             : 'bg-white border-slate-200 shadow-sm'
         }`}>
         <div className="flex items-center justify-between">
@@ -203,9 +242,10 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
             </div>
             <div>
               <p className="text-sm font-semibold text-slate-800">
+                {locationStatus === 'waiting_consent' && '📍 Waiting for GPS Consent'}
                 {locationStatus === 'detecting' && '📡 Detecting Your Location...'}
                 {locationStatus === 'detected' && '📍 Location Detected'}
-                {locationStatus === 'denied' && '📍 Location Permission Denied'}
+                {locationStatus === 'denied' && '⚠️ Location Permission Denied'}
                 {locationStatus === 'unavailable' && '📍 Geolocation Unavailable'}
               </p>
               {userLocation && (
@@ -252,6 +292,50 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
               (z: any) => `${z.name} (${z.distance_km}km)`
             ).join(', ')}
           </div>
+        )}
+      </motion.div>
+
+      {/* DPDP Act 2023 — Data Consent (always visible, before quote loads) */}
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+        className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-3">
+        <div className="flex items-center gap-2 mb-1">
+          <Shield className="w-5 h-5 text-teal-600" />
+          <h4 className="font-bold text-slate-800 text-sm">DPDP Act 2023 — Data Consent</h4>
+        </div>
+        <p className="text-xs text-slate-500 leading-relaxed">
+          As per the Digital Personal Data Protection Act, 2023, we require your explicit consent before processing your data. You may withdraw consent at any time from Settings.
+        </p>
+
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input type="checkbox" checked={consentGPS} onChange={handleGPSConsent}
+            className="mt-0.5 w-4 h-4 accent-teal-600 rounded cursor-pointer" />
+          <span className="text-sm text-slate-700 leading-snug group-hover:text-slate-900">
+            I consent to <strong>GPS Location sharing</strong> for trigger validation.
+            {locationStatus === 'detecting' && <span className="text-xs text-teal-600 ml-1">(requesting...)</span>}
+            {locationStatus === 'denied' && <span className="text-xs text-red-500 ml-1">(permission denied — please allow in browser settings)</span>}
+          </span>
+        </label>
+
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input type="checkbox" checked={consentUPI} onChange={() => setConsentUPI(!consentUPI)}
+            className="mt-0.5 w-4 h-4 accent-teal-600 rounded cursor-pointer" />
+          <span className="text-sm text-slate-700 leading-snug group-hover:text-slate-900">
+            I consent to <strong>Bank/UPI data collection</strong> for payout disbursement.
+          </span>
+        </label>
+
+        <label className="flex items-start gap-3 cursor-pointer group">
+          <input type="checkbox" checked={consentPlatform} onChange={() => setConsentPlatform(!consentPlatform)}
+            className="mt-0.5 w-4 h-4 accent-teal-600 rounded cursor-pointer" />
+          <span className="text-sm text-slate-700 leading-snug group-hover:text-slate-900">
+            I consent to sharing <strong>Platform Activity Data</strong> to confirm active delivery days.
+          </span>
+        </label>
+
+        {!allConsentsGiven && (
+          <p className="text-xs text-amber-600 flex items-center gap-1 pt-1">
+            <AlertTriangle className="w-3 h-3" /> All three consents are required to proceed.
+          </p>
         )}
       </motion.div>
 
@@ -431,43 +515,6 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
             </motion.div>
           )}
 
-          {/* Plan Comparison Table */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-            className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200">
-                  <th className="text-left p-3 text-slate-600 font-normal">Feature</th>
-                  <th className="p-3 text-teal-600 font-semibold text-center">🛡️ Basic</th>
-                  <th className="p-3 text-purple-600 font-semibold text-center">⚡ Total Guard</th>
-                </tr>
-              </thead>
-              <tbody className="text-xs">
-                {[
-                  ['Weekly Cost', `₹${quote.plans?.basic?.weekly_premium || 28}`, `₹${quote.plans?.premium?.weekly_premium || 49}`],
-                  ['Daily Cost', `₹${quote.plans?.basic?.daily_premium || 4}`, `₹${quote.plans?.premium?.daily_premium || 7}`],
-                  ['Coverage Hours', `${quote.plans?.basic?.dynamic_coverage?.total_hours || 8}h/day`, `${quote.plans?.premium?.dynamic_coverage?.total_hours || 16}h/day`],
-                  ['Max Claim', `₹${quote.plans?.basic?.max_claim_payout || 500}`, `₹${quote.plans?.premium?.max_claim_payout || 1500}`],
-                  ['Claim Speed', quote.plans?.basic?.claim_processing || '24h', quote.plans?.premium?.claim_processing || 'Instant'],
-                  ['Flood/Rain', '✅', '✅'],
-                  ['Extreme Heat', '✅', '✅'],
-                  ['Curfews', '❌', '✅'],
-                  ['Strikes', '❌', '✅'],
-                  ['Traffic Disruptions', '❌', '✅'],
-                  ['Zone Discount', '❌', quote.plans?.premium?.zone_discount?.applied ? '✅ Active' : '✅ Eligible'],
-                  ['Bonus Coverage', '❌', quote.plans?.premium?.dynamic_coverage?.bonus_hours > 0 ? `+${quote.plans.premium.dynamic_coverage.bonus_hours}h` : '✅ Eligible'],
-                  ['Priority Support', '❌', '✅'],
-                ].map(([feature, basic, premium], i) => (
-                  <tr key={i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                    <td className="p-2.5 text-slate-700">{feature}</td>
-                    <td className="p-2.5 text-center text-slate-800 font-medium">{basic}</td>
-                    <td className="p-2.5 text-center text-slate-800 font-medium">{premium}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </motion.div>
-
           {/* Weather Forecast */}
           {quote.weatherForecast && quote.weatherForecast.length > 0 && (
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
@@ -620,7 +667,7 @@ export function OnboardingStep2({ onComplete, onBack }: OnboardingStep2Props) {
 
           {/* Subscribe Button */}
           <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-            onClick={handlePayment} disabled={paying}
+            onClick={handlePayment} disabled={paying || !allConsentsGiven}
             className={`w-full py-4 font-bold rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg ${
               selectedPlan === 'premium'
                 ? 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 shadow-purple-200'

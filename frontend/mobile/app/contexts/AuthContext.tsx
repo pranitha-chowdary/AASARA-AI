@@ -42,15 +42,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const token = await AsyncStorage.getItem('authToken');
         if (token) {
           const userData = await apiService.getCurrentUser();
+          // /api/auth/me returns user doc directly OR may have .worker wrapper
+          const w = userData.worker || userData;
+          const isWorker = (w.userType === 'worker') || !!userData.worker;
           setUser({
-            id: userData.worker?._id || userData.worker?.id || userData.admin?._id || userData.id,
-            email: userData.worker?.email || userData.admin?.email || userData.email,
-            fullName: userData.worker?.fullName || userData.admin?.fullName,
-            phoneNumber: userData.worker?.phoneNumber,
-            role: userData.worker ? 'worker' : 'admin',
-            platform: userData.worker?.platform,
-            onboardingStep: userData.worker?.onboardingStep || 1,
-            onboardingCompleted: userData.worker?.onboardingCompleted || false,
+            id: w._id || w.id,
+            email: w.email,
+            fullName: w.fullName,
+            phoneNumber: w.phoneNumber,
+            role: isWorker ? 'worker' : 'admin',
+            platform: w.platform,
+            onboardingStep: w.onboardingStep ?? 1,
+            onboardingCompleted: w.onboardingCompleted ?? false,
           });
         }
       } catch (error) {
@@ -66,11 +69,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshUser = async () => {
     try {
       const userData = await apiService.getCurrentUser();
+      const w = userData.worker || userData;
       setUser(prev => prev ? {
         ...prev,
-        platform: userData.worker?.platform,
-        onboardingStep: userData.worker?.onboardingStep || prev.onboardingStep,
-        onboardingCompleted: userData.worker?.onboardingCompleted || prev.onboardingCompleted,
+        platform: w.platform ?? prev.platform,
+        onboardingStep: w.onboardingStep ?? prev.onboardingStep,
+        onboardingCompleted: w.onboardingCompleted ?? prev.onboardingCompleted,
       } : null);
     } catch (error) {
       console.error('Failed to refresh user:', error);
@@ -81,15 +85,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(true);
     try {
       const response = await apiService.workerSignUp(email, password, fullName, phoneNumber);
+      const u = response.user || response;
       setUser({
-        id: response.workerId || response.id,
-        email,
-        fullName,
-        phoneNumber,
+        id: u.id || u._id || response.workerId,
+        email: u.email || email,
+        fullName: u.fullName || fullName,
+        phoneNumber: u.phoneNumber || phoneNumber,
         role: 'worker',
-        onboardingStep: 1,
-        onboardingCompleted: false,
+        onboardingStep: u.onboardingStep ?? 1,
+        onboardingCompleted: u.onboardingCompleted ?? false,
       });
+    } catch (err) {
+      throw err;
     } finally {
       setLoading(false);
     }
@@ -99,16 +106,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(true);
     try {
       const response = await apiService.workerSignIn(email, password);
+      const u = response.user || response;
       setUser({
-        id: response.workerId || response.id,
-        email,
-        fullName: response.fullName || '',
-        phoneNumber: response.phoneNumber || '',
+        id: u.id || u._id || response.workerId,
+        email: u.email || email,
+        fullName: u.fullName || '',
+        phoneNumber: u.phoneNumber || '',
         role: 'worker',
-        platform: response.platform,
-        onboardingStep: response.onboardingStep || 1,
-        onboardingCompleted: response.onboardingCompleted || false,
+        platform: u.platform,
+        onboardingStep: u.onboardingStep ?? 1,
+        onboardingCompleted: u.onboardingCompleted ?? false,
       });
+    } catch (err) {
+      throw err;
     } finally {
       setLoading(false);
     }

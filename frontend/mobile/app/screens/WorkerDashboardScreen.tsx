@@ -8,13 +8,23 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
-  ImageBackground,
   Modal,
   FlatList,
   RefreshControl,
+  Platform,
+  StatusBar,
+  Linking,
+  Dimensions,
 } from 'react-native';
+import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Location from 'expo-location';
+import { io, Socket } from 'socket.io-client';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../contexts/AuthContext';
-import { apiService } from '../services/api';
+import { apiService, getSocketBaseUrl } from '../services/api';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface Subscription {
   premium: number;
@@ -22,35 +32,45 @@ interface Subscription {
   planType: string;
   startDate?: string;
   endDate?: string;
-  status?: string;
+  amount?: number;
 }
 
 interface Disruption {
   _id: string;
-  disruptionType: string;
-  severity: string;
+  disruptionType?: string;
+  eventType?: string;
+  eventLabel?: string;
+  severity?: number;
   status: string;
-  timestamp: string;
+  timestamp?: string;
+  triggeredAt?: string;
   payoutAmount?: number;
+  claimAmount?: number;
   upiTransactionId?: string;
   txHash?: string;
   anomalyChallenge?: string;
+  livenessChallenge?: string;
+  flow?: string;
 }
 
 interface Claim {
   _id: string;
-  eventType: string;
+  eventType?: string;
+  disruptionType?: string;
   amount: number;
-  flowType: 'A' | 'B';
+  flowType?: string;
+  payoutMethod?: string;
   status: string;
   createdAt: string;
 }
 
 interface NotificationItem {
   _id: string;
+  title?: string;
   message: string;
   type: string;
-  isRead: boolean;
+  read?: boolean;
+  isRead?: boolean;
   createdAt: string;
 }
 
@@ -65,22 +85,101 @@ const WorkerDashboardScreen: React.FC = () => {
   const [unreadCount, setUnreadCount] = useState(0);
   const [lastPingAgo, setLastPingAgo] = useState<string | null>(null);
   const [lastPingTime, setLastPingTime] = useState<Date | null>(null);
+  const [heartbeatActive, setHeartbeatActive] = useState(false);
 
   const [shiftLoading, setShiftLoading] = useState(false);
   const [loadingMain, setLoadingMain] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Modals
   const [showNotifModal, setShowNotifModal] = useState(false);
   const [showMicroModal, setShowMicroModal] = useState(false);
-  const [microResult, setMicroResult] = useState<'pass' | 'fail' | null>(null);
+
+  // Dismissed disruption cards
+  const [dismissedWarning, setDismissedWarning] = useState(false);
+  const [dismissedReceipt, setDismissedReceipt] = useState(false);
+
+  // Micro-verification
+  const [mockResult, setMockResult] = useState<'pass' | 'fail'>('pass');
   const [verifying, setVerifying] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(60);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const cameraRef = useRef<any>(null);
+  const [verifyError, setVerifyError] = useState('');
 
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const [pipelineEvents, setPipelineEvents] = useState<any[]>([]);
 
   useEffect(() => {
     initDashboard();
     return () => cleanup();
   }, []);
+
+  // Socket.io — real-time pipeline events
+  useEffect(() => {
+    let socket: Socket | null = null;
+    (async () => {
+      const token = await AsyncStorage.getItem('authToken');
+      if (!token) return;
+
+      socket = io(getSocketBaseUrl(), {
+        auth: { token },
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionDelay: 2000,
+      });
+
+      socket.on('pipeline:stage', (data: any) => {
+        setPipelineEvents(prev => [{ ...data, id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+      });
+
+      socket.on('pipeline:complete', (data: any) => {
+        setPipelineEvents(prev => [{ ...data, stage: 'complete', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+        fetchAll();
+      });
+
+      socket.on('payout:status', (data: any) => {
+        setPipelineEvents(prev => [{ ...data, stage: 'webhook_confirmation', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+        fetchAll();
+      });
+
+      socket.on('payment:confirmed', (data: any) => {
+        setPipelineEvents(prev => [{ ...data, stage: 'payment_captured', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+        fetchAll();
+      });
+
+      socket.on('payment:failed', (data: any) => {
+        setPipelineEvents(prev => [{ ...data, stage: 'payment_failed', id: Date.now() + Math.random() }, ...prev].slice(0, 20));
+        fetchAll();
+      });
+
+      socketRef.current = socket;
+    })();
+
+    return () => {
+      if (socket) socket.disconnect();
+      socketRef.current = null;
+    };
+  }, []);
+
+  // Reset dismissed state when disruption changes
+  useEffect(() => {
+    setDismissedWarning(false);
+    setDismissedReceipt(false);
+  }, [disruption?._id]);
+
+  // Micro-verify timer
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>;
+    if (showMicroModal && !verifying && timeLeft > 0) {
+      timer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+    }
+    if (!showMicroModal) { setTimeLeft(60); setVerifyError(''); }
+    return () => clearInterval(timer);
+  }, [showMicroModal, verifying, timeLeft]);
 
   const cleanup = () => {
     if (heartbeatRef.current) clearInterval(heartbeatRef.current);
@@ -96,7 +195,7 @@ const WorkerDashboardScreen: React.FC = () => {
 
   const startPolling = () => {
     if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(fetchAll, 5000);
+    pollRef.current = setInterval(fetchAll, 3000);
   };
 
   const fetchAll = async () => {
@@ -104,31 +203,19 @@ const WorkerDashboardScreen: React.FC = () => {
   };
 
   const fetchShiftStatus = async () => {
-    try {
-      const data = await apiService.getShiftStatus();
-      setIsOnline(data?.isOnline ?? false);
-    } catch {}
+    try { const data = await apiService.getShiftStatus(); setIsOnline(data?.isOnline ?? false); } catch {}
   };
 
   const fetchSubscription = async () => {
-    try {
-      const sub = await apiService.getActiveSubscription();
-      if (sub) setSubscription(sub);
-    } catch {}
+    try { const sub = await apiService.getActiveSubscription(); if (sub) setSubscription(sub); } catch {}
   };
 
   const fetchDisruption = async () => {
-    try {
-      const data = await apiService.checkActiveDisruption();
-      setDisruption(data?.disruption || null);
-    } catch {}
+    try { const data = await apiService.checkActiveDisruption(); setDisruption(data || null); } catch {}
   };
 
   const fetchClaims = async () => {
-    try {
-      const data = await apiService.fetchClaimsHistory();
-      setClaims(Array.isArray(data) ? data.slice(0, 10) : []);
-    } catch {}
+    try { const data = await apiService.fetchClaimsHistory(); setClaims(Array.isArray(data) ? data.slice(0, 10) : []); } catch {}
   };
 
   const fetchNotifications = async () => {
@@ -139,21 +226,27 @@ const WorkerDashboardScreen: React.FC = () => {
     } catch {}
   };
 
+  // Heartbeat
   const startHeartbeat = () => {
     if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    setHeartbeatActive(true);
     sendHeartbeat();
     heartbeatRef.current = setInterval(sendHeartbeat, 3 * 60 * 1000);
   };
-
   const stopHeartbeat = () => {
     if (heartbeatRef.current) { clearInterval(heartbeatRef.current); heartbeatRef.current = null; }
+    setHeartbeatActive(false);
   };
-
   const sendHeartbeat = async () => {
     try {
-      await apiService.sendHeartbeat();
-      const now = new Date();
-      setLastPingTime(now);
+      let lat: number | undefined, lng: number | undefined;
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        lat = loc.coords.latitude;
+        lng = loc.coords.longitude;
+      } catch {}
+      await apiService.sendHeartbeat(lat, lng);
+      setLastPingTime(new Date());
       setLastPingAgo('just now');
     } catch {}
   };
@@ -175,13 +268,10 @@ const WorkerDashboardScreen: React.FC = () => {
     try {
       await apiService.toggleShiftStatus(newState);
       setIsOnline(newState);
-      if (newState) startHeartbeat();
-      else { stopHeartbeat(); setLastPingAgo(null); }
+      if (newState) startHeartbeat(); else { stopHeartbeat(); setLastPingAgo(null); }
     } catch (err: any) {
       Alert.alert('Error', err?.response?.data?.error || 'Failed to update shift status.');
-    } finally {
-      setShiftLoading(false);
-    }
+    } finally { setShiftLoading(false); }
   };
 
   const handleLogout = () => {
@@ -198,16 +288,33 @@ const WorkerDashboardScreen: React.FC = () => {
     }
   };
 
-  const handleVerifyAnomaly = async () => {
-    if (!microResult) { Alert.alert('Select', 'Please choose pass or fail first.'); return; }
+  // Camera & Verification
+  const openMicroVerify = async () => {
+    if (!cameraPermission?.granted) {
+      const result = await requestCameraPermission();
+      if (!result.granted) {
+        Alert.alert('Camera Required', 'Camera permission is needed for identity verification.');
+        return;
+      }
+    }
+    setShowMicroModal(true);
+    setCameraReady(false);
+    setVerifyError('');
+    setTimeLeft(60);
+  };
+
+  const captureAndVerify = async () => {
     setVerifying(true);
+    setVerifyError('');
+    // Brief UX pause
+    await new Promise(r => setTimeout(r, 2500));
     try {
-      await apiService.verifyAnomaly(microResult);
+      await apiService.verifyAnomaly(mockResult);
       setShowMicroModal(false);
-      setMicroResult(null);
       await fetchDisruption();
     } catch (err: any) {
-      Alert.alert('Error', err?.response?.data?.error || 'Verification failed.');
+      setVerifyError(err?.response?.data?.error || 'Verification failed. Please try again.');
+      setVerifying(false);
     } finally {
       setVerifying(false);
     }
@@ -215,386 +322,714 @@ const WorkerDashboardScreen: React.FC = () => {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([fetchAll(), fetchSubscription()]);
+    await Promise.all([fetchAll(), fetchSubscription(), fetchShiftStatus()]);
     setRefreshing(false);
   }, []);
 
+  const getNotifStyle = (type: string) => {
+    switch (type) {
+      case 'weather_warning': return { bg: '#ecfdf5', border: '#6ee7b7', icon: '⚠️', color: '#0d9488' };
+      case 'upi_receipt': return { bg: '#f0fdf4', border: '#86efac', icon: '💚', color: '#16a34a' };
+      case 'sms_sent': return { bg: '#eff6ff', border: '#93c5fd', icon: '📱', color: '#2563eb' };
+      default: return { bg: '#f8fafc', border: '#e2e8f0', icon: '🔔', color: '#475569' };
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'paid': return { bg: '#dcfce7', color: '#15803d', border: '#86efac', label: '💰 Paid' };
+      case 'micro_verify': return { bg: '#fef3c7', color: '#92400e', border: '#fcd34d', label: '📸 Verify' };
+      case 'rejected': return { bg: '#fef3c7', color: '#92400e', border: '#fcd34d', label: '🚫 Rejected' };
+      case 'Frozen_Anomaly': return { bg: '#f0f4ff', color: '#254B85', border: '#93c5fd', label: '🔒 Frozen' };
+      default: return { bg: '#eff6ff', color: '#2563eb', border: '#93c5fd', label: '⏳ Processing' };
+    }
+  };
+
   if (loadingMain) {
     return (
-      <ImageBackground source={require('../../assets/bg-hero.jpeg')} style={S.bg} resizeMode="cover">
-        <View style={S.overlay}>
-          <SafeAreaView style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-            <ActivityIndicator size="large" color="#0d9488" />
-            <Text style={{ marginTop: 12, fontSize: 14, color: '#134e4a' }}>Loading dashboard...</Text>
-          </SafeAreaView>
+      <SafeAreaView style={S.safeArea}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f0fdfa" />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#0d9488" />
+          <Text style={{ marginTop: 12, fontSize: 14, color: '#134e4a' }}>Loading dashboard...</Text>
         </View>
-      </ImageBackground>
+      </SafeAreaView>
     );
   }
 
-  const disruptionStatus = disruption?.status;
+  const premium = subscription?.premium || subscription?.amount || 0;
+  const riskTier = subscription?.riskTier || '🟡 Moderate';
 
   return (
-    <ImageBackground source={require('../../assets/bg-hero.jpeg')} style={S.bg} resizeMode="cover">
-      <View style={S.overlay}>
-        <SafeAreaView style={{ flex: 1 }}>
-          <ScrollView
-            contentContainerStyle={S.scroll}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0d9488" />}
-          >
-            {/* HEADER */}
-            <View style={S.header}>
-              <View style={{ flex: 1 }}>
-                <Text style={S.welcome}>👋 {user?.fullName || 'Worker'}</Text>
-                <Text style={S.email}>{user?.email}</Text>
-                {subscription && (
-                  <View style={S.riskTierBadge}>
-                    <Text style={S.riskTierText}>{subscription.riskTier}</Text>
-                  </View>
-                )}
-              </View>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TouchableOpacity style={S.bellBtn} onPress={handleOpenNotifications}>
-                  <Text style={{ fontSize: 22 }}>🔔</Text>
-                  {unreadCount > 0 && (
-                    <View style={S.bellBadge}>
-                      <Text style={S.bellBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity style={S.logoutBtn} onPress={handleLogout}>
-                  <Text style={S.logoutText}>↩ Logout</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+    <SafeAreaView style={S.safeArea}>
+      <StatusBar barStyle="dark-content" backgroundColor="#f0fdfa" />
+      <ScrollView
+        contentContainerStyle={S.scroll}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0d9488" />}
+        showsVerticalScrollIndicator={false}
+      >
 
-            {/* SHIFT TOGGLE */}
-            <View style={[S.card, { borderLeftWidth: 4, borderLeftColor: isOnline ? '#10b981' : '#94a3b8' }]}>
-              <View style={S.row}>
+        {/* ========== HEADER ========== */}
+        <View style={S.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={S.headerTitle}>Welcome, {user?.fullName || 'Worker'} !</Text>
+            <Text style={S.headerSubtitle}>AASARA Parametric Safety Net</Text>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+            <TouchableOpacity style={S.bellBtn} onPress={handleOpenNotifications}>
+              <Ionicons name="notifications-outline" size={22} color="#64748b" />
+              {unreadCount > 0 && (
+                <View style={S.bellBadge}>
+                  <Text style={S.bellBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity style={S.logoutChip} onPress={handleLogout}>
+              <Ionicons name="log-out-outline" size={16} color="#0d9488" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* ========== SUBSCRIPTION STATUS BANNER ========== */}
+        {subscription && (
+          <View style={S.subBanner}>
+            <View style={S.subBannerIcon}>
+              <Ionicons name="checkmark-circle" size={22} color="#059669" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={S.subBannerTitle}>✅ Active Subscription</Text>
+              <Text style={S.subBannerDesc}>
+                Premium: <Text style={{ fontWeight: '800', color: '#059669' }}>₹{premium}</Text> • Risk: <Text style={{ fontWeight: '700' }}>{riskTier}</Text>
+              </Text>
+            </View>
+            <View style={{ alignItems: 'flex-end' }}>
+              <Text style={{ fontSize: 11, color: '#059669' }}>Coverage</Text>
+              <Text style={{ fontSize: 14, fontWeight: '800', color: '#059669' }}>7 Days</Text>
+            </View>
+          </View>
+        )}
+
+        {/* ========== DETECTED TRIGGERS (Active Disruption) ========== */}
+        {disruption && (disruption.status === 'pending' || disruption.status === 'paid' || disruption.status === 'micro_verify' || disruption.status === 'Frozen_Anomaly') && (
+          <View style={{ gap: 12 }}>
+            {/* ⚠️ DISRUPTION DETECTED — Teal/Navy theme */}
+            {!dismissedWarning && (
+            <View style={S.triggerCard}>
+              <View style={S.triggerAccent} />
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingLeft: 4 }}>
+                <View style={S.triggerIconCircle}>
+                  <Ionicons name="thunderstorm" size={22} color="#0d9488" />
+                </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={S.cardTitle}>Shift Status</Text>
-                  <Text style={{ fontSize: 15, color: isOnline ? '#059669' : '#64748b', marginTop: 4 }}>
-                    {isOnline ? '🟢 You are Online & Protected' : '⭕ Shift Inactive'}
+                  <View style={S.triggerBadge}>
+                    <Ionicons name="flash" size={10} color="#254B85" />
+                    <Text style={S.triggerBadgeText}>Detected Trigger</Text>
+                  </View>
+                  <Text style={S.triggerTitle}>{disruption.eventLabel || 'Weather Disruption Detected'}</Text>
+                  <Text style={S.triggerDesc}>
+                    <Text style={{ fontWeight: '700', color: '#334155' }}>{(disruption.eventType || disruption.disruptionType || 'WEATHER')?.toUpperCase()}</Text> disruption detected in your zone. AASARA AI has initiated the payout pipeline.
                   </Text>
-                  {isOnline && lastPingAgo && (
-                    <Text style={S.pingText}>Last heartbeat: {lastPingAgo}</Text>
-                  )}
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8, alignItems: 'center' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: '#38C7D2' }} />
+                      <Text style={S.triggerMeta}>Severity: <Text style={{ fontWeight: '800', color: '#254B85' }}>Level {disruption.severity || 3}/5</Text></Text>
+                    </View>
+                    <Text style={{ color: '#cbd5e1', fontSize: 11 }}>|</Text>
+                    <Text style={S.triggerMeta}>{new Date(disruption.triggeredAt || disruption.timestamp || '').toLocaleTimeString()}</Text>
+                    {disruption.flow === 'B' && (
+                      <>
+                        <Text style={{ color: '#cbd5e1', fontSize: 11 }}>|</Text>
+                        <View style={S.smsBadgeNew}><Text style={S.smsBadgeNewText}>📱 SMS Sent</Text></View>
+                      </>
+                    )}
+                  </View>
                 </View>
-                <TouchableOpacity
-                  style={[S.toggleBtn, isOnline ? S.toggleOff : S.toggleOn]}
-                  onPress={handleShiftToggle}
-                  disabled={shiftLoading}
-                >
-                  {shiftLoading
-                    ? <ActivityIndicator color="#fff" size="small" />
-                    : <Text style={S.toggleBtnText}>{isOnline ? 'End Shift' : 'Start Shift'}</Text>
-                  }
+                <TouchableOpacity onPress={() => setDismissedWarning(true)} style={S.dismissBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Ionicons name="close" size={16} color="#94a3b8" />
                 </TouchableOpacity>
               </View>
             </View>
-
-            {/* SUBSCRIPTION CARD */}
-            {subscription ? (
-              <View style={S.card}>
-                <Text style={S.cardTitle}>Weekly Protection Plan</Text>
-                <View style={[S.row, { marginTop: 10, gap: 16 }]}>
-                  <View style={{ alignItems: 'center', flex: 1 }}>
-                    <Text style={{ fontSize: 11, color: '#64748b' }}>Premium Paid</Text>
-                    <Text style={{ fontSize: 22, fontWeight: '800', color: '#0d9488' }}>
-                      ₹{subscription.premium}
-                    </Text>
-                  </View>
-                  <View style={{ width: 1, height: 40, backgroundColor: '#e2e8f0' }} />
-                  <View style={{ alignItems: 'center', flex: 1 }}>
-                    <Text style={{ fontSize: 11, color: '#64748b' }}>Risk Tier</Text>
-                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#7c3aed' }}>{subscription.riskTier}</Text>
-                  </View>
-                  <View style={{ width: 1, height: 40, backgroundColor: '#e2e8f0' }} />
-                  <View style={{ alignItems: 'center', flex: 1 }}>
-                    <Text style={{ fontSize: 11, color: '#64748b' }}>Plan</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#1e293b', textTransform: 'capitalize' }}>
-                      {subscription.planType === 'premium' ? '⚡ Total Guard' : '🛡️ Basic Shield'}
-                    </Text>
-                  </View>
-                </View>
-                {subscription.endDate && (
-                  <Text style={{ fontSize: 11, color: '#94a3b8', textAlign: 'center', marginTop: 8 }}>
-                    Active until {new Date(subscription.endDate).toLocaleDateString()}
-                  </Text>
-                )}
-              </View>
-            ) : (
-              <View style={S.card}>
-                <Text style={S.cardTitle}>No Active Plan</Text>
-                <Text style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Complete onboarding to activate protection.</Text>
-              </View>
             )}
 
-            {/* NO DISRUPTION */}
-            {!disruption && (
-              <View style={[S.card, { borderLeftWidth: 4, borderLeftColor: '#10b981' }]}>
-                <Text style={{ fontSize: 20 }}>✅</Text>
-                <Text style={[S.cardTitle, { color: '#059669', marginTop: 4 }]}>No Active Disruptions</Text>
-                <Text style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>Your route is clear. Stay safe!</Text>
-              </View>
-            )}
-
-            {/* PENDING */}
-            {disruption && disruptionStatus === 'pending' && (
-              <View style={[S.card, { borderWidth: 2, borderColor: '#ef4444', backgroundColor: '#fff1f1' }]}>
-                <View style={S.row}>
-                  <Text style={{ fontSize: 28 }}>⚠️</Text>
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: '#ef4444', letterSpacing: 1 }}>DISRUPTION ALERT</Text>
-                    <Text style={{ fontSize: 16, fontWeight: '700', color: '#dc2626', marginTop: 2 }}>
-                      {disruption.disruptionType?.toUpperCase()}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                      Severity: {disruption.severity} · {new Date(disruption.timestamp).toLocaleTimeString()}
-                    </Text>
+            {/* ✅ PAYOUT RECEIPT */}
+            {disruption.status === 'paid' && !dismissedReceipt && (
+              <View style={S.receiptCard}>
+                <View style={S.receiptAccent} />
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingLeft: 4 }}>
+                  <View style={S.receiptIconCircle}>
+                    <Ionicons name="card" size={22} color="#059669" />
                   </View>
-                </View>
-                <View style={S.tagRow}>
-                  <Text style={[S.tag, { backgroundColor: '#fee2e2', color: '#dc2626' }]}>⏳ Claim Processing</Text>
-                  <Text style={[S.tag, { backgroundColor: '#fef3c7', color: '#92400e' }]}>💰 Payout Pending</Text>
+                  <View style={{ flex: 1 }}>
+                    <View style={S.receiptBadge}>
+                      <Text style={S.receiptBadgeText}>✓ Payout Completed</Text>
+                    </View>
+                    <Text style={S.receiptTitle}>UPI Payout Receipt</Text>
+                    <View style={S.receiptBody}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Text style={{ fontSize: 13, color: '#64748b' }}>Amount Credited</Text>
+                        <Text style={S.receiptAmount}>₹{disruption.claimAmount || disruption.payoutAmount || 700}</Text>
+                      </View>
+                      <View style={S.receiptDivider} />
+                      <View style={{ gap: 4 }}>
+                        <Text style={S.receiptDetail}>Method: <Text style={{ fontWeight: '700', color: '#334155' }}>UPI Instant Transfer</Text></Text>
+                        <Text style={S.receiptDetail}>Source: <Text style={{ fontWeight: '700', color: '#334155' }}>Community Liquidity Pool</Text></Text>
+                        <Text style={S.receiptDetail}>Transaction: <Text style={{ fontWeight: '700', color: '#334155' }}>txn_{Date.now().toString().slice(-8)}</Text></Text>
+                        <Text style={S.receiptDetail}>Engine: <Text style={{ fontWeight: '700', color: '#334155' }}>AASARA Payout Engine</Text></Text>
+                        <Text style={S.receiptDetail}>Flow: <Text style={{ fontWeight: '700', color: '#334155' }}>{disruption.flow === 'B' ? 'Last Known (Offline)' : 'Real-Time (Online)'}</Text></Text>
+                      </View>
+                      {disruption.txHash && (
+                        <TouchableOpacity
+                          style={S.polygonBtnNew}
+                          onPress={() => Linking.openURL(`https://amoy.polygonscan.com/tx/${disruption.txHash}`)}
+                        >
+                          <Feather name="external-link" size={14} color="#5eead4" />
+                          <Text style={S.polygonBtnNewText}>View on PolygonScan</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                  <TouchableOpacity onPress={() => setDismissedReceipt(true)} style={S.dismissBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Ionicons name="close" size={16} color="#94a3b8" />
+                  </TouchableOpacity>
                 </View>
               </View>
             )}
 
-            {/* PAID */}
-            {disruption && disruptionStatus === 'paid' && (
-              <View style={[S.card, { borderWidth: 2, borderColor: '#22c55e', backgroundColor: '#f0fdf4' }]}>
-                <View style={S.row}>
-                  <Text style={{ fontSize: 28 }}>💸</Text>
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: '#16a34a', letterSpacing: 1 }}>PAYOUT SENT</Text>
-                    <Text style={{ fontSize: 22, fontWeight: '800', color: '#15803d' }}>
-                      ₹{disruption.payoutAmount?.toLocaleString() || '---'}
-                    </Text>
+            {/* 📸 VERIFICATION REQUIRED (Standard) */}
+            {disruption.status === 'micro_verify' && disruption.flow !== 'syndicate_attack' && (
+              <View style={S.verifyCardNew}>
+                <View style={S.verifyAccent} />
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingLeft: 4 }}>
+                  <View style={S.verifyIconCircle}>
+                    <Ionicons name="shield-checkmark" size={22} color="#d97706" />
                   </View>
-                </View>
-                <View style={{ marginTop: 10, gap: 4 }}>
-                  {disruption.upiTransactionId && (
-                    <Text style={{ fontSize: 12, color: '#64748b' }}>
-                      UPI TX: <Text style={{ fontFamily: 'monospace', color: '#1e293b' }}>{disruption.upiTransactionId}</Text>
+                  <View style={{ flex: 1 }}>
+                    <View style={S.verifyBadge}>
+                      <Text style={S.verifyBadgeText}>Verification Needed</Text>
+                    </View>
+                    <Text style={{ fontSize: 15, fontWeight: '700', color: '#92400e' }}>Identity Verification Required</Text>
+                    <Text style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
+                      Our ML engine flagged an anomaly. Upload a photo to proceed with your ₹{disruption.claimAmount || 700} claim.
                     </Text>
-                  )}
-                  {disruption.txHash && (
-                    <Text style={{ fontSize: 11, color: '#64748b' }}>
-                      Blockchain: <Text style={{ fontFamily: 'monospace', fontSize: 10 }}>{disruption.txHash.slice(0, 22)}...</Text>
-                    </Text>
-                  )}
-                  <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Payment verified & settled on-chain.</Text>
+                    <TouchableOpacity style={S.verifyBtn} onPress={openMicroVerify}>
+                      <Ionicons name="camera" size={18} color="#fff" />
+                      <Text style={S.actionBtnText}>Upload Photo Evidence</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
             )}
 
-            {/* MICRO_VERIFY */}
-            {disruption && disruptionStatus === 'micro_verify' && (
-              <View style={[S.card, { borderWidth: 2, borderColor: '#f59e0b', backgroundColor: '#fffbeb' }]}>
-                <View style={S.row}>
-                  <Text style={{ fontSize: 28 }}>📸</Text>
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: '#d97706', letterSpacing: 1 }}>VERIFICATION REQUIRED</Text>
-                    <Text style={{ fontSize: 14, color: '#92400e', marginTop: 2 }}>Upload photo evidence to confirm disruption.</Text>
+            {/* 🔒 SECURITY REVIEW / FROZEN ANOMALY */}
+            {disruption.status === 'Frozen_Anomaly' && (
+              <View style={S.frozenCardNew}>
+                <View style={S.frozenAccent} />
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingLeft: 4 }}>
+                  <View style={S.frozenIconCircle}>
+                    <Ionicons name="shield" size={22} color="#254B85" />
                   </View>
-                </View>
-                <TouchableOpacity
-                  style={[S.actionBtn, { backgroundColor: '#d97706', marginTop: 12 }]}
-                  onPress={() => setShowMicroModal(true)}
-                >
-                  <Text style={S.actionBtnText}>📤 Submit Evidence</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* FROZEN_ANOMALY */}
-            {disruption && disruptionStatus === 'Frozen_Anomaly' && (
-              <View style={[S.card, { borderWidth: 2, borderColor: '#ef4444', backgroundColor: '#fff1f1' }]}>
-                <View style={S.row}>
-                  <Text style={{ fontSize: 28 }}>🔒</Text>
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: '#dc2626', letterSpacing: 1 }}>SECURITY HOLD</Text>
-                    <Text style={{ fontSize: 14, color: '#991b1b', marginTop: 2 }}>
-                      Anomaly detected. Payout frozen until micro-verification is complete.
+                  <View style={{ flex: 1 }}>
+                    <View style={S.frozenBadge}>
+                      <Text style={S.frozenBadgeText}>🔒 Security Review</Text>
+                    </View>
+                    <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A3668' }}>Network Anomaly Detected</Text>
+                    <Text style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
+                      Auto-payout paused by Zero-Trust Engine. Complete a quick verification to release your funds.
                     </Text>
+                    <TouchableOpacity style={S.frozenBtn} onPress={openMicroVerify}>
+                      <Ionicons name="lock-closed" size={16} color="#fff" />
+                      <Text style={S.actionBtnText}>Start Micro-Verification</Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
-                <TouchableOpacity
-                  style={[S.actionBtn, { backgroundColor: '#dc2626', marginTop: 12 }]}
-                  onPress={() => setShowMicroModal(true)}
-                >
-                  <Text style={S.actionBtnText}>🔐 Start Micro-Verification</Text>
-                </TouchableOpacity>
               </View>
             )}
+          </View>
+        )}
 
-            {/* CLAIMS HISTORY */}
+        {/* ========== GIG PLATFORM + SHIFT TOGGLE ========== */}
+        <View style={S.gridRow}>
+          {/* Mock Gig Platform Widget */}
+          <View style={[S.gridCard, { flex: 1 }]}>
+            <View style={S.platformHeader}>
+              <View style={S.platformBrand}>
+                <View style={S.platformLogo}>
+                  <Text style={{ fontSize: 12, fontWeight: '900', color: '#fff' }}>Z</Text>
+                </View>
+                <View>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#0f172a' }}>Mock Gig Platform</Text>
+                  <Text style={{ fontSize: 11, color: '#94a3b8' }}>{(user as any)?.platform || 'Zomato'} Partner</Text>
+                </View>
+              </View>
+              {isOnline && heartbeatActive && (
+                <View style={S.heartbeatBadge}>
+                  <View style={S.heartbeatDot} />
+                  <Text style={S.heartbeatText}>Live</Text>
+                </View>
+              )}
+            </View>
+
+            <View style={{ alignItems: 'center', paddingVertical: 16 }}>
+              <Text style={{ fontSize: 48 }}>{isOnline ? '🟢' : '🔴'}</Text>
+              <Text style={{ fontSize: 20, fontWeight: '800', color: '#0f172a', marginTop: 8 }}>{isOnline ? 'Online' : 'Offline'}</Text>
+              <Text style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, textAlign: 'center' }}>
+                {isOnline ? 'Accepting orders • Heartbeat pinging every 3 min' : 'Toggle online to start accepting orders'}
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={[S.shiftBtn, isOnline ? S.shiftBtnOff : S.shiftBtnOn]}
+              onPress={handleShiftToggle}
+              disabled={shiftLoading}
+              activeOpacity={0.85}
+            >
+              {shiftLoading ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="power" size={18} color="#fff" />
+                  <Text style={S.shiftBtnText}>{isOnline ? 'Go Offline' : 'Start Shift'}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            {/* Connection quality */}
+            {isOnline && (
+              <View style={S.connectionBar}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Ionicons name="wifi" size={14} color="#059669" />
+                  <Text style={{ fontSize: 11, color: '#64748b' }}>Connection</Text>
+                </View>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#059669' }}>Strong • {lastPingAgo || 'N/A'}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* ========== SUBSCRIPTION & PREMIUM CARD ========== */}
+        <View style={S.detailCard}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#94a3b8', letterSpacing: 1 }}>SUBSCRIPTION DETAILS</Text>
+            <Ionicons name="cash-outline" size={18} color="#0d9488" />
+          </View>
+          <View style={{ gap: 12 }}>
+            <View style={S.detailRow}>
+              <Text style={S.detailLabel}>Weekly Premium</Text>
+              <Text style={{ fontSize: 22, fontWeight: '800', color: '#059669' }}>₹{premium || 105}</Text>
+            </View>
+            <View style={S.detailRow}>
+              <Text style={S.detailLabel}>Risk Tier</Text>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a' }}>{riskTier}</Text>
+            </View>
+            <View style={S.detailRow}>
+              <Text style={S.detailLabel}>Status</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons name="checkmark-circle" size={16} color="#059669" />
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#059669' }}>Active</Text>
+              </View>
+            </View>
+            <View style={S.detailRow}>
+              <Text style={S.detailLabel}>Coverage</Text>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a' }}>24/7 All Disruptions</Text>
+            </View>
+            <View style={S.detailDivider} />
+            <View style={S.detailRow}>
+              <Text style={S.detailLabel}>Total Claims Received</Text>
+              <Text style={{ fontSize: 14, fontWeight: '800', color: '#7c3aed' }}>{claims.filter(c => c.status === 'paid').length}</Text>
+            </View>
+            <View style={S.detailRow}>
+              <Text style={S.detailLabel}>Total Payouts</Text>
+              <Text style={{ fontSize: 14, fontWeight: '800', color: '#059669' }}>
+                ₹{claims.filter(c => c.status === 'paid').reduce((sum, c) => sum + (c.amount || 0), 0)}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* ========== NO DISRUPTION ========== */}
+        {!disruption && (
+          <View style={[S.detailCard, { borderLeftWidth: 4, borderLeftColor: '#10b981' }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <Text style={{ fontSize: 24 }}>✅</Text>
+              <View>
+                <Text style={{ fontSize: 15, fontWeight: '700', color: '#059669' }}>No Active Disruptions</Text>
+                <Text style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Your route is clear. Stay safe!</Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* ========== LIVE PIPELINE FEED ========== */}
+        {pipelineEvents.length > 0 && (
+          <>
             <View style={S.sectionHeader}>
-              <Text style={S.sectionTitle}>📋 Claims History</Text>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#14b8a6', marginRight: 4 }} />
+              <Text style={S.sectionTitle}>Live Pipeline Feed</Text>
             </View>
-            {claims.length === 0 ? (
-              <View style={[S.card, { alignItems: 'center', paddingVertical: 24 }]}>
-                <Text style={{ fontSize: 28 }}>📪</Text>
-                <Text style={{ fontSize: 14, color: '#64748b', marginTop: 8 }}>No claims yet.</Text>
-                <Text style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>Claims appear when disruptions are processed.</Text>
-              </View>
-            ) : (
-              claims.map((claim) => (
-                <View key={claim._id} style={S.claimCard}>
-                  <View style={S.row}>
+            <View style={[S.detailCard, { maxHeight: 200, overflow: 'hidden' }]}>
+              {pipelineEvents.slice(0, 8).map((evt: any) => {
+                const icons: Record<string, string> = {
+                  trigger_detected: '🌩️',
+                  fraud_check: '🛡️',
+                  payout_initiated: '💸',
+                  blockchain_logged: '⛓️',
+                  webhook_confirmation: '✅',
+                  payment_captured: '💰',
+                  payment_failed: '❌',
+                  complete: '🎉',
+                };
+                const labels: Record<string, string> = {
+                  trigger_detected: 'Trigger',
+                  fraud_check: 'Fraud Check',
+                  payout_initiated: 'Payout',
+                  blockchain_logged: 'Blockchain',
+                  webhook_confirmation: 'Bank Confirmed',
+                  payment_captured: 'Premium Verified',
+                  payment_failed: 'Payment Failed',
+                  complete: 'Complete',
+                };
+                return (
+                  <View key={evt.id} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 0.5, borderBottomColor: '#f1f5f9' }}>
+                    <Text style={{ fontSize: 16, marginRight: 8 }}>{icons[evt.stage] || '📡'}</Text>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#1e293b' }}>{claim.eventType}</Text>
-                      <Text style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                        {new Date(claim.createdAt).toLocaleDateString()}
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#0d9488' }}>{labels[evt.stage] || evt.stage}</Text>
+                      <Text style={{ fontSize: 10, color: '#64748b' }} numberOfLines={1}>
+                        {evt.workerName}{evt.amount ? ` • ₹${evt.amount}` : ''}{evt.fraudVerdict ? ` • ${evt.fraudVerdict}` : ''}{evt.txHash ? ` • tx:${evt.txHash.slice(0, 10)}…` : ''}
                       </Text>
                     </View>
-                    <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                      <Text style={{ fontSize: 15, fontWeight: '800', color: '#059669' }}>₹{claim.amount}</Text>
-                      <View style={{ flexDirection: 'row', gap: 6 }}>
-                        <View style={[S.badge, { backgroundColor: claim.flowType === 'A' ? '#dbeafe' : '#fce7f3' }]}>
-                          <Text style={{ fontSize: 10, fontWeight: '700', color: claim.flowType === 'A' ? '#1d4ed8' : '#9d174d' }}>
-                            Flow {claim.flowType}
-                          </Text>
-                        </View>
-                        <View style={[S.badge, {
-                          backgroundColor: claim.status === 'paid' ? '#dcfce7' : claim.status === 'frozen' ? '#fee2e2' : '#fefce8',
-                        }]}>
-                          <Text style={{ fontSize: 10, fontWeight: '700', color: claim.status === 'paid' ? '#15803d' : claim.status === 'frozen' ? '#dc2626' : '#854d0e' }}>
-                            {claim.status?.toUpperCase()}
-                          </Text>
-                        </View>
-                      </View>
+                    <Text style={{ fontSize: 9, color: '#94a3b8' }}>{evt.timestamp ? new Date(evt.timestamp).toLocaleTimeString() : ''}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </>
+        )}
+
+        {/* ========== CLAIMS PIPELINE ========== */}
+        <View style={S.sectionHeader}>
+          <Ionicons name="document-text-outline" size={18} color="#134e4a" />
+          <Text style={S.sectionTitle}>My Claims Pipeline</Text>
+        </View>
+
+        {claims.length === 0 ? (
+          <View style={[S.detailCard, { alignItems: 'center', paddingVertical: 28 }]}>
+            <Text style={{ fontSize: 32 }}>📪</Text>
+            <Text style={{ fontSize: 14, color: '#64748b', marginTop: 8 }}>No claims in your history yet.</Text>
+            <Text style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>Your admin will trigger disruptions when detected.</Text>
+          </View>
+        ) : (
+          claims.map((claim) => {
+            const badge = getStatusBadge(claim.status);
+            return (
+              <View key={claim._id} style={S.claimRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a', textTransform: 'capitalize' }}>
+                    {claim.disruptionType || claim.eventType || 'Unknown'}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                    {new Date(claim.createdAt).toLocaleDateString()} • {new Date(claim.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: '#059669' }}>₹{claim.amount}</Text>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    <View style={[S.chipBadge, { backgroundColor: (claim.payoutMethod === 'upi' || claim.flowType === 'A') ? '#dbeafe' : '#fce7f3' }]}>
+                      <Text style={{ fontSize: 10, fontWeight: '700', color: (claim.payoutMethod === 'upi' || claim.flowType === 'A') ? '#1d4ed8' : '#9d174d' }}>
+                        {(claim.payoutMethod === 'upi' || claim.flowType === 'A') ? '⚡ Flow A' : '📱 Flow B'}
+                      </Text>
+                    </View>
+                    <View style={[S.chipBadge, { backgroundColor: badge.bg, borderWidth: 1, borderColor: badge.border }]}>
+                      <Text style={{ fontSize: 10, fontWeight: '700', color: badge.color }}>{badge.label}</Text>
                     </View>
                   </View>
                 </View>
-              ))
-            )}
-          </ScrollView>
-        </SafeAreaView>
-      </View>
+              </View>
+            );
+          })
+        )}
 
-      {/* NOTIFICATIONS MODAL */}
+      </ScrollView>
+
+      {/* ========== NOTIFICATIONS MODAL ========== */}
       <Modal visible={showNotifModal} animationType="slide" transparent onRequestClose={() => setShowNotifModal(false)}>
         <View style={S.modalBg}>
           <View style={S.modalSheet}>
             <View style={S.modalHeader}>
               <Text style={S.modalTitle}>🔔 Notifications</Text>
-              <TouchableOpacity onPress={() => setShowNotifModal(false)}>
-                <Text style={{ fontSize: 22, color: '#64748b' }}>✕</Text>
+              <TouchableOpacity onPress={() => setShowNotifModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="close" size={24} color="#64748b" />
               </TouchableOpacity>
             </View>
             {notifications.length === 0 ? (
-              <View style={{ padding: 32, alignItems: 'center' }}>
-                <Text style={{ color: '#94a3b8', fontSize: 14 }}>No notifications yet.</Text>
+              <View style={{ padding: 40, alignItems: 'center' }}>
+                <Text style={{ fontSize: 32 }}>🔕</Text>
+                <Text style={{ color: '#94a3b8', fontSize: 14, marginTop: 8 }}>No notifications yet.</Text>
               </View>
             ) : (
               <FlatList
-                data={notifications}
+                data={notifications.slice(0, 20)}
                 keyExtractor={n => n._id}
-                renderItem={({ item }) => (
-                  <View style={[S.notifItem, !item.isRead && { backgroundColor: '#f0fdf4' }]}>
-                    <Text style={{ fontSize: 13, color: '#1e293b', lineHeight: 18 }}>{item.message}</Text>
-                    <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
-                      {new Date(item.createdAt).toLocaleString()}
-                    </Text>
-                  </View>
-                )}
+                renderItem={({ item }) => {
+                  const style = getNotifStyle(item.type);
+                  const isUnread = !(item.read || item.isRead);
+                  return (
+                    <View style={[S.notifItem, { backgroundColor: isUnread ? style.bg : '#fff', borderLeftWidth: 3, borderLeftColor: isUnread ? style.border : 'transparent' }]}>
+                      {item.title && <Text style={[S.notifItemTitle, { color: style.color }]}>{item.title}</Text>}
+                      <Text style={S.notifItemMsg}>{item.message}</Text>
+                      <Text style={S.notifItemTime}>{new Date(item.createdAt).toLocaleString()}</Text>
+                    </View>
+                  );
+                }}
               />
             )}
           </View>
         </View>
       </Modal>
 
-      {/* MICRO-VERIFICATION MODAL */}
-      <Modal visible={showMicroModal} animationType="fade" transparent onRequestClose={() => { setShowMicroModal(false); setMicroResult(null); }}>
+      {/* ========== MICRO-VERIFICATION MODAL ========== */}
+      <Modal visible={showMicroModal} animationType="fade" transparent onRequestClose={() => { setShowMicroModal(false); }}>
         <View style={S.modalBg}>
-          <View style={[S.modalSheet, { borderRadius: 16 }]}>
+          <View style={[S.modalSheet, { borderRadius: 20, maxHeight: '85%' }]}>
             <View style={S.modalHeader}>
-              <Text style={S.modalTitle}>🔐 Micro-Verification</Text>
-              <TouchableOpacity onPress={() => { setShowMicroModal(false); setMicroResult(null); }}>
-                <Text style={{ fontSize: 22, color: '#64748b' }}>✕</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={{ padding: 20 }}>
-              <View style={{ backgroundColor: '#f8fafc', borderRadius: 10, padding: 14, marginBottom: 16 }}>
-                <Text style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>LIVENESS CHALLENGE</Text>
-                <Text style={{ fontSize: 14, fontWeight: '600', color: '#1e293b' }}>
-                  {disruption?.anomalyChallenge || 'Please confirm you are currently on the road during this shift.'}
-                </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="shield-checkmark" size={20} color="#254B85" />
+                <Text style={S.modalTitle}>Photo Verification</Text>
               </View>
-              <Text style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>
-                In production, this requests face liveness verification. For demo, select:
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 12, marginBottom: 20 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {/* Secret demo toggle */}
                 <TouchableOpacity
-                  style={[S.microChoice, microResult === 'pass' && { backgroundColor: '#dcfce7', borderColor: '#22c55e' }]}
-                  onPress={() => setMicroResult('pass')}
+                  onPress={() => setMockResult(prev => prev === 'pass' ? 'fail' : 'pass')}
+                  style={[S.demoToggle, mockResult === 'fail' && { backgroundColor: '#fef2f2' }]}
                 >
-                  <Text style={{ fontSize: 24 }}>✅</Text>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#15803d', marginTop: 4 }}>Pass</Text>
-                  <Text style={{ fontSize: 11, color: '#64748b' }}>Liveness confirmed</Text>
+                  <Ionicons name="flash" size={14} color={mockResult === 'fail' ? '#dc2626' : '#94a3b8'} />
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[S.microChoice, microResult === 'fail' && { backgroundColor: '#fee2e2', borderColor: '#ef4444' }]}
-                  onPress={() => setMicroResult('fail')}
-                >
-                  <Text style={{ fontSize: 24 }}>❌</Text>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#dc2626', marginTop: 4 }}>Fail</Text>
-                  <Text style={{ fontSize: 11, color: '#64748b' }}>Could not verify</Text>
+                <TouchableOpacity onPress={() => setShowMicroModal(false)} disabled={verifying}>
+                  <Ionicons name="close" size={24} color="#64748b" />
                 </TouchableOpacity>
               </View>
-              <TouchableOpacity
-                style={[S.actionBtn, { backgroundColor: microResult ? '#0d9488' : '#94a3b8' }]}
-                onPress={handleVerifyAnomaly}
-                disabled={!microResult || verifying}
-              >
-                {verifying ? <ActivityIndicator color="#fff" /> : <Text style={S.actionBtnText}>Submit Verification</Text>}
-              </TouchableOpacity>
             </View>
+
+            <ScrollView style={{ padding: 16 }} showsVerticalScrollIndicator={false}>
+              {!verifying ? (
+                <View style={{ gap: 14 }}>
+                  <View style={{ backgroundColor: 'rgba(37,75,133,0.06)', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(37,75,133,0.12)' }}>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#254B85' }}>
+                      Your claim of ₹{disruption?.claimAmount || 700} has been paused due to a network anomaly. Complete verification to release funds.
+                    </Text>
+                  </View>
+
+                  {/* Liveness Challenge */}
+                  {(disruption?.livenessChallenge || disruption?.anomalyChallenge) && (
+                    <View style={S.challengeBox}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, marginBottom: 4 }}>
+                        <Ionicons name="flash" size={12} color="#f59e0b" />
+                        <Text style={{ fontSize: 10, fontWeight: '800', color: '#94a3b8', letterSpacing: 1.5 }}>VERIFY LIVENESS</Text>
+                        <Ionicons name="flash" size={12} color="#f59e0b" />
+                      </View>
+                      <Text style={S.challengeText}>{disruption?.livenessChallenge || disruption?.anomalyChallenge}</Text>
+                      <Text style={[S.timerText, timeLeft < 10 && { color: '#ef4444' }]}>
+                        00:{timeLeft < 10 ? `0${timeLeft}` : timeLeft}
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Camera Feed */}
+                  {timeLeft === 0 ? (
+                    <View style={{ backgroundColor: '#f8f9fc', padding: 20, borderRadius: 14, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(37,75,133,0.15)' }}>
+                      <Ionicons name="time-outline" size={32} color="#254B85" />
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: '#254B85', marginTop: 8 }}>Time Expired</Text>
+                      <Text style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>Close and restart the verification.</Text>
+                    </View>
+                  ) : verifyError ? (
+                    <View style={{ backgroundColor: '#fffbeb', padding: 20, borderRadius: 14, alignItems: 'center', borderWidth: 1, borderColor: '#fcd34d' }}>
+                      <Ionicons name="warning" size={32} color="#d97706" />
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#92400e', marginTop: 8, textAlign: 'center' }}>{verifyError}</Text>
+                    </View>
+                  ) : (
+                    <View style={{ gap: 12 }}>
+                      <View style={S.cameraContainer}>
+                        {cameraPermission?.granted ? (
+                          <CameraView
+                            ref={cameraRef}
+                            style={S.camera}
+                            facing="front"
+                            onCameraReady={() => setCameraReady(true)}
+                          />
+                        ) : (
+                          <View style={[S.camera, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#0f172a' }]}>
+                            <ActivityIndicator size="large" color="#0d9488" />
+                            <Text style={{ color: '#94a3b8', fontSize: 12, fontWeight: '700', marginTop: 8 }}>Initializing Camera...</Text>
+                          </View>
+                        )}
+                        <View style={S.cameraOverlay}>
+                          <View style={S.liveBadge}>
+                            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#fff' }} />
+                            <Text style={{ fontSize: 9, fontWeight: '900', color: '#fff', letterSpacing: 0.5 }}>LIVE</Text>
+                          </View>
+                        </View>
+                      </View>
+
+                      <Text style={{ fontSize: 11, color: '#94a3b8', textAlign: 'center', paddingHorizontal: 8 }}>
+                        AASARA Vision AI is monitoring the feed. Position yourself clearly and perform the requested gesture.
+                      </Text>
+
+                      <TouchableOpacity
+                        style={[S.captureBtn, (timeLeft === 0 || !cameraPermission?.granted) && { opacity: 0.5 }]}
+                        onPress={captureAndVerify}
+                        disabled={timeLeft === 0 || !cameraPermission?.granted}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons name="camera" size={20} color="#fff" />
+                        <Text style={{ fontSize: 14, fontWeight: '800', color: '#fff' }}>Capture Live Photo</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              ) : (
+                <View style={{ paddingVertical: 40, alignItems: 'center', gap: 16 }}>
+                  <View style={S.verifySpinner}>
+                    <ActivityIndicator size="large" color="#0d9488" />
+                  </View>
+                  <Text style={{ fontSize: 16, fontWeight: '800', color: '#0f172a' }}>Vision AI Processing...</Text>
+                  <Text style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center' }}>
+                    Analyzing authenticity & '<Text style={{ fontWeight: '700', color: '#475569' }}>{disruption?.livenessChallenge || disruption?.anomalyChallenge || 'gesture'}</Text>'
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
-    </ImageBackground>
+    </SafeAreaView>
   );
 };
 
 const S = StyleSheet.create({
-  bg: { flex: 1 },
-  overlay: { flex: 1, backgroundColor: 'rgba(255,255,255,0.18)' },
-  scroll: { padding: 20, paddingBottom: 48 },
-  row: { flexDirection: 'row', alignItems: 'center' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
-  welcome: { fontSize: 20, fontWeight: '700', color: '#134e4a' },
-  email: { fontSize: 13, color: '#0f766e', marginTop: 2 },
-  riskTierBadge: { alignSelf: 'flex-start', backgroundColor: 'rgba(124,58,237,0.12)', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 2, marginTop: 6 },
-  riskTierText: { fontSize: 11, fontWeight: '700', color: '#7c3aed' },
-  bellBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.80)', borderWidth: 1, borderColor: '#99f6e4', alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  bellBadge: { position: 'absolute', top: -2, right: -2, backgroundColor: '#ef4444', borderRadius: 10, minWidth: 18, height: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
+  safeArea: { flex: 1, backgroundColor: '#f0fdfa' },
+  scroll: { padding: 16, paddingBottom: 40, gap: 14 },
+
+  // Header
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  headerTitle: { fontSize: 22, fontWeight: '800', color: '#0f172a' },
+  headerSubtitle: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
+  bellBtn: { width: 42, height: 42, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', alignItems: 'center', justifyContent: 'center' },
+  bellBadge: { position: 'absolute', top: -4, right: -4, backgroundColor: '#254B85', borderRadius: 10, minWidth: 18, height: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
   bellBadgeText: { fontSize: 10, fontWeight: '800', color: '#fff' },
-  logoutBtn: { backgroundColor: 'rgba(255,255,255,0.80)', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#99f6e4', justifyContent: 'center' },
-  logoutText: { fontSize: 12, color: '#0d9488', fontWeight: '600' },
-  card: { backgroundColor: 'rgba(255,255,255,0.82)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(13,148,136,0.18)', padding: 16, marginBottom: 14 },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#134e4a' },
-  pingText: { fontSize: 11, color: '#94a3b8', marginTop: 4, fontStyle: 'italic' },
-  toggleBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10, minWidth: 100, alignItems: 'center' },
-  toggleOn: { backgroundColor: '#0d9488' },
-  toggleOff: { backgroundColor: '#ef4444' },
-  toggleBtnText: { fontSize: 14, fontWeight: '600', color: '#fff' },
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
-  tag: { fontSize: 11, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, overflow: 'hidden' },
-  actionBtn: { borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
-  actionBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  sectionHeader: { marginBottom: 8, marginTop: 4 },
+  logoutChip: { width: 42, height: 42, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', alignItems: 'center', justifyContent: 'center' },
+
+  // Subscription Banner
+  subBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#ecfdf5', borderWidth: 1, borderColor: '#a7f3d0', borderRadius: 14, padding: 14, gap: 12 },
+  subBannerIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#d1fae5', alignItems: 'center', justifyContent: 'center' },
+  subBannerTitle: { fontSize: 13, fontWeight: '700', color: '#065f46' },
+  subBannerDesc: { fontSize: 12, color: '#047857', marginTop: 2 },
+
+  // Trigger Card (was Weather Warning)
+  triggerCard: { backgroundColor: '#f8fffe', borderWidth: 1, borderColor: 'rgba(56,199,210,0.25)', borderRadius: 16, padding: 16, overflow: 'hidden', position: 'relative' as const },
+  triggerAccent: { position: 'absolute' as const, top: 0, left: 0, bottom: 0, width: 4, borderTopLeftRadius: 16, borderBottomLeftRadius: 16, backgroundColor: '#38C7D2' },
+  triggerIconCircle: { width: 42, height: 42, borderRadius: 12, backgroundColor: '#ccfbf1', alignItems: 'center' as const, justifyContent: 'center' as const },
+  triggerBadge: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, backgroundColor: 'rgba(37,75,133,0.08)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: 'flex-start' as const, marginBottom: 4 },
+  triggerBadgeText: { fontSize: 9, fontWeight: '800' as const, color: '#254B85', letterSpacing: 1, textTransform: 'uppercase' as const },
+  triggerTitle: { fontSize: 15, fontWeight: '700' as const, color: '#1A3668', marginBottom: 2 },
+  triggerDesc: { fontSize: 12, color: '#64748b', lineHeight: 18 },
+  triggerMeta: { fontSize: 11, color: '#94a3b8' },
+  smsBadgeNew: { backgroundColor: '#eff6ff', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  smsBadgeNewText: { fontSize: 10, fontWeight: '700' as const, color: '#2563eb' },
+  dismissBtn: { padding: 6, borderRadius: 8, backgroundColor: '#f8fafc' },
+
+  // Receipt Card (was Payout Card)
+  receiptCard: { backgroundColor: '#f8fdfb', borderWidth: 1, borderColor: 'rgba(16,185,129,0.2)', borderRadius: 16, padding: 16, overflow: 'hidden', position: 'relative' as const },
+  receiptAccent: { position: 'absolute' as const, top: 0, left: 0, bottom: 0, width: 4, borderTopLeftRadius: 16, borderBottomLeftRadius: 16, backgroundColor: '#10b981' },
+  receiptIconCircle: { width: 42, height: 42, borderRadius: 12, backgroundColor: '#d1fae5', alignItems: 'center' as const, justifyContent: 'center' as const },
+  receiptBadge: { backgroundColor: '#d1fae5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: 'flex-start' as const, marginBottom: 4 },
+  receiptBadgeText: { fontSize: 9, fontWeight: '800' as const, color: '#059669', letterSpacing: 1, textTransform: 'uppercase' as const },
+  receiptTitle: { fontSize: 15, fontWeight: '700' as const, color: '#065f46', marginBottom: 2 },
+  receiptBody: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#d1fae5', borderRadius: 12, padding: 12, marginTop: 10, gap: 6 },
+  receiptAmount: { fontSize: 26, fontWeight: '800' as const, color: '#059669' },
+  receiptDivider: { height: 1, backgroundColor: '#ecfdf5', marginVertical: 6 },
+  receiptDetail: { fontSize: 11, color: '#64748b' },
+  polygonBtnNew: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 6, backgroundColor: '#254B85', paddingVertical: 10, borderRadius: 10, marginTop: 8 },
+  polygonBtnNewText: { fontSize: 12, fontWeight: '800' as const, color: '#5eead4' },
+
+  // Verify Card (updated)
+  verifyCardNew: { backgroundColor: '#fffdf7', borderWidth: 1, borderColor: 'rgba(217,119,6,0.2)', borderRadius: 16, padding: 16, overflow: 'hidden', position: 'relative' as const },
+  verifyAccent: { position: 'absolute' as const, top: 0, left: 0, bottom: 0, width: 4, borderTopLeftRadius: 16, borderBottomLeftRadius: 16, backgroundColor: '#f59e0b' },
+  verifyIconCircle: { width: 42, height: 42, borderRadius: 12, backgroundColor: '#fef3c7', alignItems: 'center' as const, justifyContent: 'center' as const },
+  verifyBadge: { backgroundColor: '#fef3c7', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: 'flex-start' as const, marginBottom: 4 },
+  verifyBadgeText: { fontSize: 9, fontWeight: '800' as const, color: '#92400e', letterSpacing: 1, textTransform: 'uppercase' as const },
+  verifyBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 8, borderRadius: 12, paddingVertical: 12, marginTop: 12, backgroundColor: '#d97706' },
+
+  // Frozen / Security Review Card (updated — navy themed)
+  frozenCardNew: { backgroundColor: '#f8f9fc', borderWidth: 1, borderColor: 'rgba(37,75,133,0.15)', borderRadius: 16, padding: 16, overflow: 'hidden', position: 'relative' as const },
+  frozenAccent: { position: 'absolute' as const, top: 0, left: 0, bottom: 0, width: 4, borderTopLeftRadius: 16, borderBottomLeftRadius: 16, backgroundColor: '#254B85' },
+  frozenIconCircle: { width: 42, height: 42, borderRadius: 12, backgroundColor: 'rgba(37,75,133,0.08)', alignItems: 'center' as const, justifyContent: 'center' as const },
+  frozenBadge: { backgroundColor: 'rgba(37,75,133,0.08)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, alignSelf: 'flex-start' as const, marginBottom: 4 },
+  frozenBadgeText: { fontSize: 9, fontWeight: '800' as const, color: '#254B85', letterSpacing: 1, textTransform: 'uppercase' as const },
+  frozenBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, justifyContent: 'center' as const, gap: 8, borderRadius: 12, paddingVertical: 12, marginTop: 12, backgroundColor: '#254B85' },
+
+  // Grid
+  gridRow: { flexDirection: 'row', gap: 10 },
+  gridCard: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 14, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2 },
+
+  // Platform Header
+  platformHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  platformBrand: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  platformLogo: { width: 28, height: 28, borderRadius: 8, backgroundColor: '#ef4444', alignItems: 'center', justifyContent: 'center' },
+
+  // Heartbeat
+  heartbeatBadge: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  heartbeatDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10b981' },
+  heartbeatText: { fontSize: 10, fontWeight: '700', color: '#059669' },
+
+  // Shift Button
+  shiftBtn: { borderRadius: 12, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
+  shiftBtnOn: { backgroundColor: '#059669', shadowColor: '#059669', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  shiftBtnOff: { backgroundColor: '#ef4444', shadowColor: '#ef4444', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  shiftBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+
+  // Connection
+  connectionBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#f1f5f9', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10, marginTop: 10 },
+
+  // Detail Card
+  detailCard: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 14, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2 },
+  detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  detailLabel: { fontSize: 13, color: '#64748b' },
+  detailDivider: { height: 1, backgroundColor: '#f1f5f9', marginVertical: 6 },
+
+  // Section
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 4 },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: '#134e4a' },
-  claimCard: { backgroundColor: 'rgba(255,255,255,0.85)', borderRadius: 12, borderWidth: 1, borderColor: 'rgba(13,148,136,0.15)', padding: 14, marginBottom: 10 },
-  badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+
+  // Claim Row
+  claimRow: { flexDirection: 'row', backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 12, padding: 14, alignItems: 'center' },
+  chipBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+
+  // Action Button
+  actionBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 10, paddingVertical: 12 },
+  actionBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
+
+  // Modals
+  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '75%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
-  modalTitle: { fontSize: 17, fontWeight: '700', color: '#1e293b' },
-  notifItem: { padding: 14, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
-  microChoice: { flex: 1, borderRadius: 12, borderWidth: 2, borderColor: '#e2e8f0', padding: 14, alignItems: 'center', gap: 4, backgroundColor: '#f8fafc' },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
+  modalTitle: { fontSize: 17, fontWeight: '700', color: '#0f172a' },
+
+  // Notification items
+  notifItem: { padding: 14, borderBottomWidth: 1, borderBottomColor: '#f8fafc' },
+  notifItemTitle: { fontSize: 13, fontWeight: '700' },
+  notifItemMsg: { fontSize: 13, color: '#475569', lineHeight: 18, marginTop: 2 },
+  notifItemTime: { fontSize: 11, color: '#94a3b8', marginTop: 4 },
+
+  // Micro-Verification
+  demoToggle: { width: 30, height: 30, borderRadius: 6, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' },
+  challengeBox: { backgroundColor: '#0f172a', borderWidth: 2, borderColor: '#334155', borderRadius: 14, padding: 16, alignItems: 'center' },
+  challengeText: { fontSize: 18, fontWeight: '900', color: '#5eead4', textAlign: 'center', marginTop: 4 },
+  timerText: { fontSize: 24, fontWeight: '800', color: '#cbd5e1', marginTop: 10, fontVariant: ['tabular-nums'] },
+  cameraContainer: { borderRadius: 16, overflow: 'hidden', borderWidth: 3, borderColor: '#1e293b', position: 'relative' },
+  camera: { width: '100%', aspectRatio: 4 / 3 },
+  cameraOverlay: { position: 'absolute', top: 10, right: 10, flexDirection: 'row', gap: 6 },
+  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(13,148,136,0.85)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  captureBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#0d9488', paddingVertical: 14, borderRadius: 14, shadowColor: '#0d9488', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  verifySpinner: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#f0fdfa', alignItems: 'center', justifyContent: 'center' },
 });
 
 export default WorkerDashboardScreen;

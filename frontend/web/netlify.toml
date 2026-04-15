@@ -4,6 +4,8 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # Set VITE_API_URL in the Netlify dashboard to your Render backend URL:
+  # VITE_API_URL = "https://aasara-backend.onrender.com"
 
 # SPA routing — send all routes to index.html
 [[redirects]]

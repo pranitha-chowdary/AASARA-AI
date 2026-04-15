@@ -28,6 +28,11 @@ const getApiUrl = () => {
 
 const API_URL = getApiUrl();
 
+// Socket.io base URL (without /api suffix)
+export const getSocketBaseUrl = () => {
+  return API_URL.replace(/\/api$/, '');
+};
+
 class ApiService {
   private axiosInstance: AxiosInstance;
 
@@ -142,9 +147,9 @@ class ApiService {
     }
   }
 
-  async sendHeartbeat() {
+  async sendHeartbeat(lat?: number, lng?: number) {
     try {
-      await this.axiosInstance.post('/heartbeat');
+      await this.axiosInstance.post('/heartbeat', { lat, lng });
     } catch (error) {
       // silent
     }
@@ -181,10 +186,11 @@ class ApiService {
     return response.data;
   }
 
-  async linkPlatform(platform: string, platformCode?: string) {
+  async linkPlatform(platform: string, platformCode?: string, upiId?: string) {
     const response = await this.axiosInstance.post('/onboarding/link-platform', {
       platform,
       platformCode: platformCode || null,
+      upiId: upiId || null,
     });
     return response.data;
   }
@@ -193,6 +199,11 @@ class ApiService {
     const response = await this.axiosInstance.post('/onboarding/premium-quote', {
       startDate, endDate, lat, lng,
     });
+    return response.data;
+  }
+
+  async saveLocation(lat: number, lng: number) {
+    const response = await this.axiosInstance.post('/user/save-location', { lat, lng });
     return response.data;
   }
 

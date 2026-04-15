@@ -169,7 +169,8 @@ def get_zone_safety_score(lat, lng):
 
 
 def _detect_city(lat, lng):
-    """Detect which city the coordinates are in."""
+    """Detect which city the coordinates are in using reverse geocoding with local fallback."""
+    # Fast local lookup first (avoids API call for major cities)
     city_centers = {
         'Mumbai': (19.0760, 72.8777),
         'Hyderabad': (17.3850, 78.4867),
@@ -178,8 +179,20 @@ def _detect_city(lat, lng):
         'Delhi': (28.6139, 77.2090),
         'Pune': (18.5204, 73.8567),
         'Kolkata': (22.5726, 88.3639),
+        'Vijayawada': (16.5062, 80.6480),
+        'Visakhapatnam': (17.6868, 83.2185),
+        'Ahmedabad': (23.0225, 72.5714),
+        'Jaipur': (26.9124, 75.7873),
+        'Lucknow': (26.8467, 80.9462),
+        'Kochi': (9.9312, 76.2673),
+        'Indore': (22.7196, 75.8577),
+        'Nagpur': (21.1458, 79.0882),
+        'Coimbatore': (11.0168, 76.9558),
+        'Bhubaneswar': (20.2961, 85.8245),
+        'Thiruvananthapuram': (8.5241, 76.9366),
+        'Guntur': (16.3067, 80.4365),
     }
-    
+
     min_dist = float('inf')
     closest_city = 'Unknown'
     for city, (clat, clng) in city_centers.items():
@@ -188,7 +201,27 @@ def _detect_city(lat, lng):
             min_dist = dist
             closest_city = city
 
-    return closest_city if min_dist < 50 else 'Other'
+    if min_dist < 50:
+        return closest_city
+
+    # Fallback: real reverse geocoding via OpenStreetMap Nominatim (free, no key required)
+    try:
+        import requests as _requests
+        resp = _requests.get(
+            'https://nominatim.openstreetmap.org/reverse',
+            params={'lat': lat, 'lon': lng, 'format': 'json', 'zoom': 10, 'addressdetails': 1},
+            headers={'User-Agent': 'AasaraAI/1.0'},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            addr = data.get('address', {})
+            city_name = addr.get('city') or addr.get('town') or addr.get('state_district') or addr.get('county') or addr.get('state') or 'Unknown'
+            return city_name
+    except Exception:
+        pass
+
+    return closest_city if min_dist < 100 else 'Other'
 
 
 def _estimate_city_traffic(lat, lng):
