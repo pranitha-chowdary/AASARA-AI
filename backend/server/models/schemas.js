@@ -276,6 +276,7 @@ const liquidityPoolSchema = new mongoose.Schema(
     totalPayouts: { type: Number, default: 0 },
     totalClaims: { type: Number, default: 0 },
     totalWorkers: { type: Number, default: 0 },
+    enrollmentsSuspended: { type: Boolean, default: false },
     lastUpdated: { type: Date, default: Date.now },
     transactions: [{
       type: { type: String, enum: ['contribution', 'payout'] },

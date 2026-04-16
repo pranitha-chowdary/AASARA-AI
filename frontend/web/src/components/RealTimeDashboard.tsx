@@ -16,13 +16,20 @@ import {
   Camera,
   AlertTriangle,
   Loader2,
+  MapPin,
+  Navigation,
+  Radio,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useTelemetryService } from '../services/telemetryService';
 
 const GATEWAY_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001';
 
 export function RealTimeDashboard() {
   const { workerProfile, user } = useAuth();
+
+  // Live GPS Telemetry — streams real location to backend + fraud engine
+  const telemetry = useTelemetryService(workerProfile?.userId || user?.id || 'unknown');
   
   // State
   const [isOnline, setIsOnline] = useState(false);
@@ -343,6 +350,12 @@ export function RealTimeDashboard() {
       });
       if (res.ok) {
         setIsOnline(newStatus);
+        // Start/stop live GPS tracking
+        if (newStatus) {
+          telemetry.startTelemetry();
+        } else {
+          telemetry.stopTelemetry();
+        }
       } else {
         const data = await res.json();
         if (res.status === 403 && data.hoursRemaining) {
@@ -693,9 +706,69 @@ export function RealTimeDashboard() {
               </p>
               <p className="text-slate-500 text-xs mb-4">
                 {isOnline 
-                  ? 'Accepting orders • Heartbeat pinging every 3 min' 
+                  ? 'Accepting orders • Live GPS tracking active' 
                   : 'Toggle online to start your shift'}
               </p>
+              {/* ====== LIVE GPS TRACKING WIDGET ====== */}
+              {isOnline && telemetry.telemetryStatus === 'streaming' && telemetry.currentLocation && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mb-4 rounded-xl overflow-hidden border border-emerald-200 shadow-sm"
+                >
+                  {/* Header bar */}
+                  <div className="bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="relative">
+                        <Radio className="w-4 h-4 text-white" />
+                        <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-white rounded-full animate-ping" />
+                      </div>
+                      <span className="text-white text-xs font-bold tracking-wide uppercase">Live GPS Tracking</span>
+                    </div>
+                    <span className="text-emerald-100 text-[10px] font-semibold bg-white/20 px-2 py-0.5 rounded-full">
+                      {telemetry.locationSource === 'real' ? '🛰️ REAL GPS' : '📡 MOCK'}
+                    </span>
+                  </div>
+                  {/* Body */}
+                  <div className="bg-emerald-50/50 px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      {/* Radar animation */}
+                      <div className="relative w-12 h-12 flex-shrink-0">
+                        <div className="absolute inset-0 rounded-full bg-emerald-200/40 animate-ping" style={{ animationDuration: '2s' }} />
+                        <div className="absolute inset-1.5 rounded-full bg-emerald-200/60 animate-ping" style={{ animationDuration: '2s', animationDelay: '0.5s' }} />
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="w-6 h-6 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-full flex items-center justify-center shadow-lg shadow-emerald-200">
+                            <Navigation className="w-3 h-3 text-white" />
+                          </div>
+                        </div>
+                      </div>
+                      {/* Coordinates */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="text-slate-800 text-sm font-bold font-mono">
+                            {telemetry.currentLocation.lat.toFixed(4)}°, {telemetry.currentLocation.lng.toFixed(4)}°
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 mt-1.5">
+                          <span className="text-[10px] text-slate-500 flex items-center gap-1">
+                            <span className={`inline-block w-1.5 h-1.5 rounded-full ${telemetry.anomalyScore > 30 ? 'bg-red-500' : 'bg-emerald-500'}`} />
+                            Anomaly: <strong className={telemetry.anomalyScore > 30 ? 'text-red-600' : 'text-emerald-700'}>{telemetry.anomalyScore}</strong>
+                          </span>
+                          <span className="text-[10px] text-slate-400">|</span>
+                          <span className="text-[10px] text-slate-500">{telemetry.gpsHistory.length} pts synced</span>
+                          {telemetry.lastSyncTime && (
+                            <>
+                              <span className="text-[10px] text-slate-400">|</span>
+                              <span className="text-[10px] text-slate-500">{new Date(telemetry.lastSyncTime).toLocaleTimeString()}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
               {lockoutError && (
                 <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 text-xs flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0" />

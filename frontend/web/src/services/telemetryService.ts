@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 
 // Telemetry Service Hook for Real-Time Data Collection
-// Integrated with AASARA Core Processing Gateway (http://localhost:5001)
+// Integrated with AASARA Core Processing Gateway
+// Uses REAL browser Geolocation API with mock-sensor fallback
 
 const GATEWAY_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5001';
 
@@ -9,6 +10,9 @@ interface GPSData {
   lat: number;
   lng: number;
   accuracy: number;
+  speed: number | null;
+  heading: number | null;
+  altitude: number | null;
   timestamp: string;
 }
 
@@ -20,41 +24,76 @@ interface SensorData {
   path: GPSData[];
 }
 
-// Mock GPS location generator (Hackathon only)
-function generateMockGPS(): GPSData {
-  // Mumbai delivery zones
+// Fallback mock GPS (only used when browser denies permission)
+function generateFallbackGPS(): GPSData {
   const baseLatitude = 19.0760;
   const baseLongitude = 72.8777;
-  const variance = 0.05; // ~5km variance
-  
+  const variance = 0.002; // ~200m variance (realistic walking)
   return {
     lat: baseLatitude + (Math.random() - 0.5) * variance,
     lng: baseLongitude + (Math.random() - 0.5) * variance,
     accuracy: 5 + Math.random() * 15,
-    timestamp: new Date().toISOString()
+    speed: 1 + Math.random() * 4,
+    heading: Math.random() * 360,
+    altitude: null,
+    timestamp: new Date().toISOString(),
   };
 }
 
-// Mock sensor data generator
-function generateMockSensors(): SensorData {
+// Simulated sensor data (browsers don't reliably expose accelerometer/gyroscope)
+function generateSensorData(path: GPSData[]): SensorData {
+  // Derive pseudo-acceleration from GPS speed changes
+  let accelEstimate = 0.5 + Math.random() * 2;
+  if (path.length >= 2) {
+    const prev = path[path.length - 2];
+    const curr = path[path.length - 1];
+    if (prev.speed != null && curr.speed != null) {
+      accelEstimate = Math.abs(curr.speed - prev.speed) + 0.3 + Math.random() * 0.5;
+    }
+  }
   return {
     accelerometer: [
-      0.5 + Math.random() * 2,
+      accelEstimate,
       0.3 + Math.random() * 1.5,
-      9.8 + Math.random() * 0.5
+      9.8 + Math.random() * 0.5,
     ],
     gyroscope: [Math.random() * 30, Math.random() * 30, Math.random() * 30],
     battery: {
       level: 40 + Math.random() * 50,
       temperature: 30 + Math.random() * 15,
-      isCharging: false
+      isCharging: false,
     },
     pressure: {
       current: 1013 + Math.random() * 10,
-      baseline: 1013
+      baseline: 1013,
     },
-    path: [] // Will be populated with GPS history
+    path: path.map(({ lat, lng, timestamp }) => ({ lat, lng, accuracy: 10, timestamp })),
   };
+}
+
+// Request real GPS from browser
+function getRealGPS(): Promise<GPSData> {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Geolocation not supported'));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          speed: pos.coords.speed,
+          heading: pos.coords.heading,
+          altitude: pos.coords.altitude,
+          timestamp: new Date(pos.timestamp).toISOString(),
+        });
+      },
+      (err) => reject(err),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 3000 },
+    );
+  });
 }
 
 interface TelemetryService {
@@ -62,33 +101,82 @@ interface TelemetryService {
   gpsHistory: GPSData[];
   anomalyScore: number;
   lastSyncTime: string | null;
+  currentLocation: GPSData | null;
+  locationSource: 'real' | 'fallback' | null;
   startTelemetry: () => void;
   stopTelemetry: () => void;
 }
 
-// Main Telemetry Hook
+// Main Telemetry Hook — real GPS with fallback
 export function useTelemetryService(workerId: string): TelemetryService {
   const [telemetryStatus, setTelemetryStatus] = useState('idle');
   const [gpsHistory, setGpsHistory] = useState<GPSData[]>([]);
   const [anomalyScore, setAnomalyScore] = useState(0);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+  const [currentLocation, setCurrentLocation] = useState<GPSData | null>(null);
+  const [locationSource, setLocationSource] = useState<'real' | 'fallback' | null>(null);
   const telemetryIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+  const historyRef = useRef<GPSData[]>([]);
+  const latestPosRef = useRef<GPSData | null>(null);
 
   // Start telemetry stream
   const startTelemetry = useCallback(async () => {
     if (telemetryIntervalRef.current) return;
-    
-    setTelemetryStatus('streaming');
-    const history: GPSData[] = [];
 
+    setTelemetryStatus('requesting-permission');
+
+    // Try to start continuous watch via Geolocation API
+    let usingReal = false;
+    if (navigator.geolocation) {
+      try {
+        // First get an initial position to confirm permission
+        const initial = await getRealGPS();
+        latestPosRef.current = initial;
+        setCurrentLocation(initial);
+        setLocationSource('real');
+        usingReal = true;
+        console.log('[Telemetry] ✅ Real GPS acquired — live tracking enabled');
+
+        // Start continuous watch
+        watchIdRef.current = navigator.geolocation.watchPosition(
+          (pos) => {
+            const gps: GPSData = {
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+              speed: pos.coords.speed,
+              heading: pos.coords.heading,
+              altitude: pos.coords.altitude,
+              timestamp: new Date(pos.timestamp).toISOString(),
+            };
+            latestPosRef.current = gps;
+            setCurrentLocation(gps);
+          },
+          (err) => console.warn('[Telemetry] watchPosition error:', err.message),
+          { enableHighAccuracy: true, maximumAge: 3000 },
+        );
+      } catch (err) {
+        console.warn('[Telemetry] ⚠️ GPS permission denied — using fallback mock data');
+        setLocationSource('fallback');
+      }
+    } else {
+      setLocationSource('fallback');
+    }
+
+    setTelemetryStatus('streaming');
+
+    // Sync telemetry to backend every 5 seconds
     telemetryIntervalRef.current = setInterval(async () => {
       try {
-        const gps = generateMockGPS();
-        const sensors = generateMockSensors();
-        
-        history.push(gps);
-        if (history.length > 10) history.shift(); // Keep last 10 points
-        sensors.path = history;
+        const gps = usingReal && latestPosRef.current
+          ? latestPosRef.current
+          : generateFallbackGPS();
+
+        historyRef.current.push(gps);
+        if (historyRef.current.length > 20) historyRef.current.shift();
+
+        const sensors = generateSensorData(historyRef.current);
 
         const response = await fetch(`${GATEWAY_URL}/api/telemetry`, {
           method: 'POST',
@@ -97,21 +185,23 @@ export function useTelemetryService(workerId: string): TelemetryService {
             workerId,
             gps,
             status: 'online',
-            sensors
-          })
+            sensors,
+          }),
         });
 
         const data = await response.json();
-        
-        setGpsHistory(history);
+
+        setGpsHistory([...historyRef.current]);
         setAnomalyScore(data.anomalyScore || 0);
         setLastSyncTime(new Date().toISOString());
-        
-        console.log(`[Client] Telemetry synced - Anomaly: ${data.anomalyScore}`);
+
+        console.log(
+          `[Telemetry] ${usingReal ? '📍 REAL' : '🔶 MOCK'} → (${gps.lat.toFixed(4)}, ${gps.lng.toFixed(4)}) Anomaly: ${data.anomalyScore}`,
+        );
       } catch (error) {
         console.error('Telemetry sync error:', error);
       }
-    }, 3000); // Send every 3 seconds
+    }, 5000);
   }, [workerId]);
 
   // Stop telemetry stream
@@ -120,7 +210,13 @@ export function useTelemetryService(workerId: string): TelemetryService {
       clearInterval(telemetryIntervalRef.current);
       telemetryIntervalRef.current = null;
     }
+    if (watchIdRef.current != null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    historyRef.current = [];
     setTelemetryStatus('idle');
+    setLocationSource(null);
   }, []);
 
   // Cleanup on unmount
@@ -133,8 +229,10 @@ export function useTelemetryService(workerId: string): TelemetryService {
     gpsHistory,
     anomalyScore,
     lastSyncTime,
+    currentLocation,
+    locationSource,
     startTelemetry,
-    stopTelemetry
+    stopTelemetry,
   };
 }
 

@@ -23,6 +23,7 @@ import { io, Socket } from 'socket.io-client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../contexts/AuthContext';
 import { apiService, getSocketBaseUrl } from '../services/api';
+import { liveTrackingService, TrackingState } from '../services/liveTrackingService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -113,9 +114,13 @@ const WorkerDashboardScreen: React.FC = () => {
   const socketRef = useRef<Socket | null>(null);
   const [pipelineEvents, setPipelineEvents] = useState<any[]>([]);
 
+  // Live GPS tracking state
+  const [trackingState, setTrackingState] = useState<TrackingState>(liveTrackingService.getState());
+
   useEffect(() => {
     initDashboard();
-    return () => cleanup();
+    const unsub = liveTrackingService.subscribe(setTrackingState);
+    return () => { cleanup(); unsub(); };
   }, []);
 
   // Socket.io — real-time pipeline events
@@ -268,7 +273,19 @@ const WorkerDashboardScreen: React.FC = () => {
     try {
       await apiService.toggleShiftStatus(newState);
       setIsOnline(newState);
-      if (newState) startHeartbeat(); else { stopHeartbeat(); setLastPingAgo(null); }
+      if (newState) {
+        startHeartbeat();
+        // Start live GPS tracking
+        const workerId = (user as any)?._id || (user as any)?.userId || 'unknown';
+        const result = await liveTrackingService.start(workerId);
+        if (!result.success) {
+          console.warn('[Shift] GPS tracking failed:', result.error);
+        }
+      } else {
+        stopHeartbeat();
+        liveTrackingService.stop();
+        setLastPingAgo(null);
+      }
     } catch (err: any) {
       Alert.alert('Error', err?.response?.data?.error || 'Failed to update shift status.');
     } finally { setShiftLoading(false); }
@@ -573,8 +590,62 @@ const WorkerDashboardScreen: React.FC = () => {
               <Text style={{ fontSize: 48 }}>{isOnline ? '🟢' : '🔴'}</Text>
               <Text style={{ fontSize: 20, fontWeight: '800', color: '#0f172a', marginTop: 8 }}>{isOnline ? 'Online' : 'Offline'}</Text>
               <Text style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, textAlign: 'center' }}>
-                {isOnline ? 'Accepting orders • Heartbeat pinging every 3 min' : 'Toggle online to start accepting orders'}
+                {isOnline ? 'Accepting orders • Live GPS tracking active' : 'Toggle online to start accepting orders'}
               </Text>
+              {/* ====== LIVE GPS TRACKING WIDGET ====== */}
+              {isOnline && trackingState.isTracking && trackingState.currentLocation && (
+                <View style={S.gpsWidget}>
+                  {/* Green header bar */}
+                  <View style={S.gpsWidgetHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <View style={{ position: 'relative' }}>
+                        <Ionicons name="radio-outline" size={14} color="#fff" />
+                        <View style={S.gpsPingDot} />
+                      </View>
+                      <Text style={S.gpsWidgetTitle}>LIVE GPS TRACKING</Text>
+                    </View>
+                    <View style={S.gpsSourceBadge}>
+                      <Text style={S.gpsSourceText}>🛰️ REAL GPS</Text>
+                    </View>
+                  </View>
+                  {/* Body with radar + coordinates */}
+                  <View style={S.gpsWidgetBody}>
+                    {/* Radar animation circle */}
+                    <View style={S.gpsRadarOuter}>
+                      <View style={S.gpsRadarMiddle}>
+                        <View style={S.gpsRadarCenter}>
+                          <Ionicons name="navigate" size={14} color="#fff" />
+                        </View>
+                      </View>
+                    </View>
+                    {/* Coordinates + metadata */}
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Ionicons name="location" size={14} color="#059669" />
+                        <Text style={S.gpsCoordText}>
+                          {trackingState.currentLocation.lat.toFixed(4)}°, {trackingState.currentLocation.lng.toFixed(4)}°
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 5 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                          <View style={[S.gpsDotSmall, { backgroundColor: trackingState.anomalyScore > 30 ? '#ef4444' : '#059669' }]} />
+                          <Text style={S.gpsMetaText}>
+                            Anomaly: <Text style={{ fontWeight: '700', color: trackingState.anomalyScore > 30 ? '#dc2626' : '#059669' }}>{trackingState.anomalyScore}</Text>
+                          </Text>
+                        </View>
+                        <Text style={S.gpsMetaDivider}>|</Text>
+                        <Text style={S.gpsMetaText}>{trackingState.pathHistory?.length || 0} pts</Text>
+                        {trackingState.lastSyncTime && (
+                          <>
+                            <Text style={S.gpsMetaDivider}>|</Text>
+                            <Text style={S.gpsMetaText}>{new Date(trackingState.lastSyncTime).toLocaleTimeString()}</Text>
+                          </>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              )}
             </View>
 
             <TouchableOpacity
@@ -1030,6 +1101,22 @@ const S = StyleSheet.create({
   liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(13,148,136,0.85)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   captureBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#0d9488', paddingVertical: 14, borderRadius: 14, shadowColor: '#0d9488', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
   verifySpinner: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#f0fdfa', alignItems: 'center', justifyContent: 'center' },
+
+  // ====== Live GPS Tracking Widget ======
+  gpsWidget: { marginTop: 12, borderRadius: 14, borderWidth: 1, borderColor: '#a7f3d0', overflow: 'hidden', width: '100%' },
+  gpsWidgetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#059669', paddingHorizontal: 14, paddingVertical: 8 },
+  gpsWidgetTitle: { fontSize: 10, fontWeight: '800', color: '#fff', letterSpacing: 1.5 },
+  gpsPingDot: { position: 'absolute', top: -1, right: -1, width: 6, height: 6, borderRadius: 3, backgroundColor: '#fff' },
+  gpsSourceBadge: { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
+  gpsSourceText: { fontSize: 9, fontWeight: '700', color: '#ecfdf5' },
+  gpsWidgetBody: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#f0fdf4', paddingHorizontal: 14, paddingVertical: 12 },
+  gpsRadarOuter: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(5,150,105,0.12)', alignItems: 'center', justifyContent: 'center' },
+  gpsRadarMiddle: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(5,150,105,0.2)', alignItems: 'center', justifyContent: 'center' },
+  gpsRadarCenter: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#059669', alignItems: 'center', justifyContent: 'center', shadowColor: '#059669', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 6, elevation: 4 },
+  gpsCoordText: { fontSize: 14, fontWeight: '800', color: '#0f172a', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  gpsMetaText: { fontSize: 10, color: '#64748b' },
+  gpsMetaDivider: { fontSize: 10, color: '#cbd5e1' },
+  gpsDotSmall: { width: 5, height: 5, borderRadius: 2.5 },
 });
 
 export default WorkerDashboardScreen;

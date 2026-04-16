@@ -150,8 +150,9 @@ const MONGODB_URI = process.env.MONGODB_URI;
 
 mongoose
   .connect(MONGODB_URI)
-  .then(() => {
+  .then(async () => {
     console.log('✅ MongoDB Connected Successfully');
+    await loadEnrollmentSuspensionState();
   })
   .catch((err) => {
     console.error('❌ MongoDB Connection Error:', err.message);
@@ -159,8 +160,35 @@ mongoose
   });
 
 // ==================== ENROLLMENT SUSPENSION FLAG ====================
-// In-memory flag — sufficient for demo/dev.
+// Persisted in LiquidityPool document; in-memory copy for fast checks.
 let enrollmentsSuspended = false;
+
+// Load persisted enrollment suspension state from DB after Mongo connects
+async function loadEnrollmentSuspensionState() {
+  try {
+    const pool = await LiquidityPool.findOne({ poolId: 'main_pool' }).lean();
+    if (pool && pool.enrollmentsSuspended) {
+      enrollmentsSuspended = true;
+      console.log('⛔ Enrollment suspension loaded from DB — enrollments are SUSPENDED');
+    } else {
+      console.log('✅ Enrollments are OPEN (loaded from DB)');
+    }
+  } catch (err) {
+    console.error('Failed to load enrollment suspension state:', err.message);
+  }
+}
+
+async function persistEnrollmentSuspension(suspended) {
+  try {
+    await LiquidityPool.findOneAndUpdate(
+      { poolId: 'main_pool' },
+      { $set: { enrollmentsSuspended: !!suspended, lastUpdated: new Date() } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('Failed to persist enrollment suspension:', err.message);
+  }
+}
 
 // ==================== AUTH MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
@@ -179,10 +207,11 @@ app.get('/api/admin/enrollment-status', authenticateToken, (req, res) => {
   res.json({ suspended: enrollmentsSuspended });
 });
 
-app.post('/api/admin/enrollment-status', authenticateToken, (req, res) => {
+app.post('/api/admin/enrollment-status', authenticateToken, async (req, res) => {
   const { suspended } = req.body;
   enrollmentsSuspended = !!suspended;
-  console.log(`[Admin] Enrollments ${enrollmentsSuspended ? '⛔ SUSPENDED' : '✅ OPEN'}`);
+  await persistEnrollmentSuspension(enrollmentsSuspended);
+  console.log(`[Admin] Enrollments ${enrollmentsSuspended ? '⛔ SUSPENDED' : '✅ OPEN'} (persisted to DB)`);
   res.json({ suspended: enrollmentsSuspended });
 });
 
@@ -1215,16 +1244,19 @@ app.get('/api/subscription/calendar', authenticateToken, async (req, res) => {
 
 // ==================== ML ANOMALY DETECTION (Layer 3b) ====================
 function detectAnomalies(workerId, sensorData) {
-  const { gps, accelerometer, gyroscope, battery, pressure } = sensorData;
+  if (!sensorData) return { score: 0, isSuspicious: false };
+  const { accelerometer, gyroscope, battery, pressure, path } = sensorData;
+  // path may be at sensorData.path or sensorData.gps.path
+  const gpsPath = path || sensorData.gps?.path || [];
   let anomalyScore = 0;
 
   // Check Movement Kinematics
-  if (gps.path && gps.path.length > 2) {
+  if (gpsPath.length > 2) {
     const distances = [];
-    for (let i = 1; i < gps.path.length; i++) {
+    for (let i = 1; i < gpsPath.length; i++) {
       const d = Math.sqrt(
-        Math.pow(gps.path[i].lat - gps.path[i-1].lat, 2) +
-        Math.pow(gps.path[i].lng - gps.path[i-1].lng, 2)
+        Math.pow(gpsPath[i].lat - gpsPath[i-1].lat, 2) +
+        Math.pow(gpsPath[i].lng - gpsPath[i-1].lng, 2)
       );
       distances.push(d);
     }
@@ -1235,8 +1267,8 @@ function detectAnomalies(workerId, sensorData) {
   }
 
   // Check Environmental Context (Battery Temp, Pressure)
-  if (battery.temperature > 40) anomalyScore -= 5; // Real usage in heat
-  if (Math.abs(pressure.current - pressure.baseline) > 10) anomalyScore -= 10; // Altitude change = real movement
+  if (battery?.temperature > 40) anomalyScore -= 5; // Real usage in heat
+  if (pressure && Math.abs(pressure.current - pressure.baseline) > 10) anomalyScore -= 10; // Altitude change = real movement
 
   // Check Sensor Movement (Zero = sitting at table)
   const avgAccel = (accelerometer || []).reduce((a, b) => a + b, 0) / Math.max((accelerometer || []).length, 1);
@@ -1265,7 +1297,42 @@ app.post('/api/telemetry', async (req, res) => {
   try {
     const { workerId, gps, status, sensors } = req.body;
 
+    // Local rule-based anomaly check (fast)
     const anomalyResult = detectAnomalies(workerId, sensors);
+
+    // Forward to ML Fraud Engine for deep Isolation Forest analysis (async, non-blocking)
+    let mlFraudResult = null;
+    try {
+      const mlResp = await axios.post(`${ML_ENGINE_URL}/api/ml/fraud-check`, {
+        worker_id: workerId,
+        lat: gps.lat,
+        lng: gps.lng,
+        platform_status: status,
+        path_points: (sensors?.path || []).map(p => ({
+          lat: p.lat,
+          lng: p.lng,
+          timestamp: p.timestamp,
+        })),
+        accelerometer: sensors?.accelerometer || [],
+        gyroscope: sensors?.gyroscope || [],
+        battery_temp: sensors?.battery?.temperature,
+        barometric_pressure: sensors?.pressure?.current,
+        network_quality: { degraded: false },
+        claim_history: { total_claims: 0, rejected_claims: 0 },
+      }, { timeout: 3000 });
+      mlFraudResult = mlResp.data;
+    } catch (mlErr) {
+      // ML engine may be offline — degrade gracefully
+      console.warn(`[Telemetry] ML fraud-check unavailable: ${mlErr.message}`);
+    }
+
+    // Use ML score if available, otherwise fall back to local rule-based
+    const finalAnomalyScore = mlFraudResult
+      ? mlFraudResult.final_anomaly_score
+      : anomalyResult.score;
+    const isSuspicious = mlFraudResult
+      ? mlFraudResult.fraud_verdict !== 'auto_approve'
+      : anomalyResult.isSuspicious;
 
     // Save telemetry to MongoDB
     const telemetryRecord = new Telemetry({
@@ -1278,20 +1345,41 @@ app.post('/api/telemetry', async (req, res) => {
       },
       status,
       sensors,
-      anomalyScore: anomalyResult.score,
+      anomalyScore: finalAnomalyScore,
     });
 
     await telemetryRecord.save();
 
+    // Broadcast live location to admin dashboard via Socket.IO
+    io.to('role:admin').emit('worker:location', {
+      workerId,
+      lat: gps.lat,
+      lng: gps.lng,
+      accuracy: gps.accuracy,
+      speed: gps.speed || null,
+      anomalyScore: finalAnomalyScore,
+      isSuspicious,
+      fraudVerdict: mlFraudResult?.fraud_verdict || null,
+      timestamp: new Date().toISOString(),
+    });
+
+    // If worker has a user room, send them their own anomaly feedback
+    io.to(`user:${workerId}`).emit('telemetry:feedback', {
+      anomalyScore: finalAnomalyScore,
+      isSuspicious,
+      timestamp: new Date().toISOString(),
+    });
+
     console.log(
-      `[Telemetry 1a] Worker: ${workerId}, Location: ${gps.lat.toFixed(4)}, ${gps.lng.toFixed(4)}, Anomaly: ${anomalyResult.score}`
+      `[Telemetry 1a] Worker: ${workerId}, Location: ${gps.lat.toFixed(4)}, ${gps.lng.toFixed(4)}, Anomaly: ${finalAnomalyScore}${mlFraudResult ? ' (ML)' : ' (local)'}`
     );
 
     res.json({
       status: 'synced',
       timestamp: new Date().toISOString(),
-      anomalyDetected: anomalyResult.isSuspicious,
-      anomalyScore: anomalyResult.score,
+      anomalyDetected: isSuspicious,
+      anomalyScore: finalAnomalyScore,
+      fraudVerdict: mlFraudResult?.fraud_verdict || null,
     });
   } catch (error) {
     console.error('Telemetry error:', error);
@@ -3312,7 +3400,8 @@ app.post('/api/admin/black-swan-simulation', authenticateToken, async (req, res)
     console.log(`   Final Pool Balance: ₹${Math.max(0, runningBalance)} | Drained: ${poolDrained}`);
     if (suspendEnrollments) {
       enrollmentsSuspended = true;
-      console.warn('⛔ SUSPEND ENROLLMENTS TRIGGERED — pool critically low');
+      await persistEnrollmentSuspension(true);
+      console.warn('⛔ SUSPEND ENROLLMENTS TRIGGERED — pool critically low (persisted to DB)');
     }
 
     res.json({
