@@ -1711,6 +1711,10 @@ app.get('/api/subscription/get-active', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Subscription expired', subscription: null });
       }
 
+      // 90-day eligibility calculation (Social Security Code, 2020 §6)
+      const activeDays = Math.floor((Date.now() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      const eligibilityMet = activeDays >= 90;
+
       res.json({
         subscription: {
           amount: user.activeSubscription.amount,
@@ -1721,6 +1725,8 @@ app.get('/api/subscription/get-active', authenticateToken, async (req, res) => {
           activatedAt: user.activeSubscription.verifiedAt,
           paymentId: user.activeSubscription.paymentId,
           status: 'active',
+          activeDays,
+          eligibilityMet,
         },
       });
     } catch (dateErr) {
@@ -1799,6 +1805,12 @@ app.get('/api/admin/workers', authenticateToken, async (req, res) => {
     const workersWithDetails = workers.map(worker => {
       const lastPing = worker.lastPingTime ? new Date(worker.lastPingTime) : null;
       const pingAgeMs = lastPing ? (Date.now() - lastPing.getTime()) : null;
+      // 90-day eligibility calculation (Social Security Code, 2020 §6)
+      const subStartDate = worker.activeSubscription?.startDate
+        ? new Date(worker.activeSubscription.startDate)
+        : new Date(worker.createdAt);
+      const activeDays = Math.floor((Date.now() - subStartDate.getTime()) / (1000 * 60 * 60 * 24));
+      const eligibilityMet = activeDays >= 90;
       return {
         id: worker._id,
         fullName: worker.fullName,
@@ -1818,6 +1830,8 @@ app.get('/api/admin/workers', authenticateToken, async (req, res) => {
         pingStale: pingAgeMs ? pingAgeMs > 3 * 60 * 1000 : true,
         city: worker.city || null,
         lastKnownLocation: worker.lastKnownLocation || null,
+        activeDays,
+        eligibilityMet,
       };
     });
 
@@ -3167,6 +3181,176 @@ app.post('/api/admin/process-claim', authenticateToken, async (req, res) => {
     res.status(400).json({ error: 'Invalid action — use approve or reject' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to process claim', details: err.message });
+  }
+});
+
+// ==================== ADMIN: WEEKLY DISRUPTION PREDICTIONS + RECOMMENDATIONS ====================
+app.get('/api/admin/weekly-predictions', authenticateToken, async (req, res) => {
+  try {
+    // Fetch ML risk analysis from the ML engine
+    const mlResponse = await axios.post(`${ML_ENGINE_URL}/api/ml/risk-analysis`, {
+      lat: 19.076, lng: 72.8777, // Default: Mumbai
+    }, { timeout: 15000 });
+
+    const riskData = mlResponse.data;
+    const disruptions = riskData.disruptions || {};
+    const daily = disruptions.daily || [];
+    const weeklySummary = disruptions.weekly_summary || {};
+    const weather = riskData.weather || {};
+    const zone = riskData.zone || {};
+
+    // Fetch current pool + claims data for financial projections
+    const [pool, recentClaims, activeWorkers] = await Promise.all([
+      LiquidityPool.findOne({ poolId: 'main_pool' }).lean(),
+      Claim.find({ createdAt: { $gte: new Date(Date.now() - 30 * 86400000) } }).lean(),
+      User.countDocuments({ userType: 'worker', policyActive: true }),
+    ]);
+
+    const poolBalance = pool?.totalBalance || 0;
+    const avgClaimAmount = recentClaims.length > 0
+      ? Math.round(recentClaims.reduce((s, c) => s + (c.amount || 0), 0) / recentClaims.length)
+      : 500;
+
+    // Build daily financial projections
+    const dailyProjections = daily.map((d) => {
+      const prob = d.disruption_probability || 0;
+      const expectedClaims = Math.round(activeWorkers * prob);
+      const projectedPayout = expectedClaims * avgClaimAmount;
+      return {
+        ...d,
+        expected_claims: expectedClaims,
+        projected_payout: projectedPayout,
+        pool_impact_pct: poolBalance > 0 ? Math.round((projectedPayout / poolBalance) * 100) : 0,
+      };
+    });
+
+    const totalProjectedPayout = dailyProjections.reduce((s, d) => s + d.projected_payout, 0);
+    const projectedPoolAfterWeek = Math.max(0, poolBalance - totalProjectedPayout);
+    const poolSurvives = projectedPoolAfterWeek > 0;
+
+    // Generate recommendations based on predictions
+    const recommendations = [];
+    const highRiskDays = dailyProjections.filter(d => d.disruption_probability > 0.3);
+    const criticalDays = dailyProjections.filter(d => d.disruption_probability > 0.5);
+
+    if (criticalDays.length > 0) {
+      recommendations.push({
+        severity: 'critical',
+        icon: '🚨',
+        title: `${criticalDays.length} Critical-Risk Day${criticalDays.length > 1 ? 's' : ''} Ahead`,
+        description: `${criticalDays.map(d => d.day_name).join(', ')} show >50% disruption probability. Dominant: ${criticalDays[0].dominant_risk}.`,
+        action: 'Recommend running Black Swan stress test to verify pool resilience.',
+      });
+    }
+
+    if (highRiskDays.length >= 3) {
+      recommendations.push({
+        severity: 'high',
+        icon: '⚠️',
+        title: 'Sustained High-Risk Window',
+        description: `${highRiskDays.length} of 7 days show >30% disruption probability. Cluster payout exposure: ₹${totalProjectedPayout.toLocaleString()}.`,
+        action: 'Consider temporarily raising premium rates or capping new enrollments.',
+      });
+    }
+
+    if (totalProjectedPayout > poolBalance * 0.7) {
+      recommendations.push({
+        severity: 'critical',
+        icon: '💰',
+        title: 'Pool Drain Risk — Projected Payouts Exceed 70% of Pool',
+        description: `Projected weekly payouts ₹${totalProjectedPayout.toLocaleString()} vs pool balance ₹${poolBalance.toLocaleString()}.`,
+        action: 'Trigger Black Swan simulation to evaluate worst-case. Suspend enrollments if pool < 20% after test.',
+      });
+    }
+
+    if (!poolSurvives) {
+      recommendations.push({
+        severity: 'critical',
+        icon: '🔴',
+        title: 'POOL INSOLVENCY WARNING',
+        description: `Current pool ₹${poolBalance.toLocaleString()} cannot absorb projected ₹${totalProjectedPayout.toLocaleString()} in payouts.`,
+        action: 'IMMEDIATELY run Black Swan simulation and activate Suspend Enrollments protocol.',
+      });
+    }
+
+    // Disruption-type specific recommendations
+    const typeAggregation = {};
+    daily.forEach(d => {
+      Object.entries(d.type_probabilities || {}).forEach(([type, prob]) => {
+        typeAggregation[type] = (typeAggregation[type] || 0) + prob;
+      });
+    });
+    const dominantType = Object.entries(typeAggregation).sort((a, b) => b[1] - a[1])[0];
+    if (dominantType && dominantType[1] > 1.0) {
+      const typeLabels = {
+        monsoon: '🌊 Monsoon Flooding',
+        heatwave: '🔥 Extreme Heatwave',
+        pollution: '💨 Severe Air Pollution',
+        curfew: '🚨 Curfew / Section 144',
+        strike: '⛔ Transport Strike / Bandh',
+      };
+      recommendations.push({
+        severity: 'warning',
+        icon: '📊',
+        title: `Dominant Risk: ${typeLabels[dominantType[0]] || dominantType[0]}`,
+        description: `Cumulative weekly probability for ${dominantType[0]}: ${(dominantType[1] / 7 * 100).toFixed(0)}% average.`,
+        action: `Pre-position resources for ${dominantType[0]}-type claims. Verify trigger-scan thresholds.`,
+      });
+    }
+
+    // Weather-specific recommendation
+    if (weather.risk?.score > 60) {
+      recommendations.push({
+        severity: 'high',
+        icon: '🌦️',
+        title: `Weather Risk Score: ${weather.risk.score}/100`,
+        description: weather.risk.description || 'Elevated weather risk detected from forecast data.',
+        action: 'Monitor OpenWeatherMap feed. Consider pre-triggering claims if rain > 50mm/3h.',
+      });
+    }
+
+    // Zone safety recommendation
+    if (zone.safety_score < 50) {
+      recommendations.push({
+        severity: 'warning',
+        icon: '📍',
+        title: `Zone Safety Score: ${zone.safety_score}/100 (${zone.detected_city || 'Unknown'})`,
+        description: 'Low zone safety increases disruption exposure.',
+        action: 'Review zone-specific risk modifiers and consider geo-fenced premium adjustments.',
+      });
+    }
+
+    // Black Swan readiness recommendation (always present)
+    recommendations.push({
+      severity: 'info',
+      icon: '🦢',
+      title: 'Black Swan Readiness Check',
+      description: `Pool can absorb ~${poolBalance > 0 ? Math.floor(poolBalance / (avgClaimAmount * activeWorkers || 1)) : 0} days of max-severity events before insolvency.`,
+      action: 'Run 14-day Black Swan stress test to verify drain timeline and suspension trigger.',
+    });
+
+    res.json({
+      predictions: dailyProjections,
+      weekly_summary: {
+        ...weeklySummary,
+        total_projected_payout: totalProjectedPayout,
+        projected_pool_after_week: projectedPoolAfterWeek,
+        pool_survives: poolSurvives,
+        active_workers: activeWorkers,
+        avg_claim_amount: avgClaimAmount,
+        current_pool_balance: poolBalance,
+      },
+      weather: {
+        current: weather.current,
+        risk: weather.risk,
+      },
+      zone,
+      recommendations,
+      city: disruptions.city || zone.detected_city || 'Unknown',
+    });
+  } catch (err) {
+    console.error('Weekly predictions error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch predictions', details: err.message });
   }
 });
 

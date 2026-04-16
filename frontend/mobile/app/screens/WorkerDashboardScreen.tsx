@@ -34,6 +34,8 @@ interface Subscription {
   startDate?: string;
   endDate?: string;
   amount?: number;
+  activeDays?: number;
+  eligibilityMet?: boolean;
 }
 
 interface Disruption {
@@ -422,6 +424,56 @@ const WorkerDashboardScreen: React.FC = () => {
             <View style={{ alignItems: 'flex-end' }}>
               <Text style={{ fontSize: 11, color: '#059669' }}>Coverage</Text>
               <Text style={{ fontSize: 14, fontWeight: '800', color: '#059669' }}>7 Days</Text>
+            </View>
+          </View>
+        )}
+
+        {/* ========== 90-DAY ELIGIBILITY STATUS (Social Security Code, 2020 §6) ========== */}
+        {subscription?.activeDays != null && (
+          <View style={{
+            flexDirection: 'row', alignItems: 'center',
+            backgroundColor: subscription.eligibilityMet ? '#ecfdf5' : '#fffbeb',
+            borderWidth: 1, borderColor: subscription.eligibilityMet ? '#a7f3d0' : '#fde68a',
+            borderRadius: 14, padding: 14, gap: 12,
+          }}>
+            <View style={{
+              width: 40, height: 40, borderRadius: 20,
+              backgroundColor: subscription.eligibilityMet ? '#d1fae5' : '#fef3c7',
+              alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Text style={{ fontSize: 20 }}>{subscription.eligibilityMet ? '🛡️' : '⏳'}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{
+                fontSize: 13, fontWeight: '700',
+                color: subscription.eligibilityMet ? '#065f46' : '#92400e',
+              }}>
+                {subscription.eligibilityMet ? '✅ Payout Eligible' : '⏳ Eligibility Pending'}
+              </Text>
+              <Text style={{
+                fontSize: 11, marginTop: 2,
+                color: subscription.eligibilityMet ? '#047857' : '#b45309',
+              }}>
+                SS Code 2020 §6 — {subscription.activeDays}/90 active days
+              </Text>
+            </View>
+            <View style={{ alignItems: 'flex-end', width: 80 }}>
+              <View style={{
+                width: '100%', height: 8, backgroundColor: '#e2e8f0',
+                borderRadius: 4, overflow: 'hidden',
+              }}>
+                <View style={{
+                  width: `${Math.min((subscription.activeDays / 90) * 100, 100)}%`,
+                  height: 8, borderRadius: 4,
+                  backgroundColor: subscription.eligibilityMet ? '#10b981' : '#f59e0b',
+                }} />
+              </View>
+              <Text style={{
+                fontSize: 10, fontWeight: '800', marginTop: 3,
+                color: subscription.eligibilityMet ? '#059669' : '#b45309',
+              }}>
+                {subscription.eligibilityMet ? 'Fully Eligible' : `${90 - subscription.activeDays}d left`}
+              </Text>
             </View>
           </View>
         )}

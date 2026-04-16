@@ -31,6 +31,8 @@ interface Worker {
   lastPingTime?: string;
   pingStale?: boolean;
   pingAgeMs?: number;
+  activeDays?: number;
+  eligibilityMet?: boolean;
 }
 
 interface Claim {
@@ -479,6 +481,22 @@ const AdminDashboardScreen: React.FC = () => {
                       {w.subscriptionAmount && (
                         <Text style={styles.workerMeta}>💰 Premium: ₹{w.subscriptionAmount} • {w.riskTier || 'N/A'}</Text>
                       )}
+
+                      {/* 90-Day Eligibility Gate (Social Security Code, 2020 §6) */}
+                      <View style={{
+                        flexDirection: 'row', alignItems: 'center', gap: 6,
+                        backgroundColor: w.eligibilityMet ? '#ecfdf5' : '#fef2f2',
+                        borderWidth: 1, borderColor: w.eligibilityMet ? '#a7f3d0' : '#fecaca',
+                        borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginTop: 6,
+                      }}>
+                        <Text style={{ fontSize: 13 }}>{w.eligibilityMet ? '✅' : '⏳'}</Text>
+                        <Text style={{ fontSize: 11, fontWeight: '800', color: w.eligibilityMet ? '#065f46' : '#991b1b' }}>
+                          {w.activeDays ?? '?'}/90 days
+                        </Text>
+                        <Text style={{ fontSize: 9, color: w.eligibilityMet ? '#059669' : '#dc2626' }}>
+                          {w.eligibilityMet ? '• SS Code §6 Eligible' : '• Ineligible for payout'}
+                        </Text>
+                      </View>
 
                       <View style={styles.workerActions}>
                         <TouchableOpacity

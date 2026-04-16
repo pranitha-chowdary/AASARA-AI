@@ -6,6 +6,7 @@ import {
   RefreshCw, DollarSign, BarChart3, Target,
   XCircle, Loader2, Cpu, FileWarning,
   Truck, ShieldAlert, BadgeCheck, Wifi, TrendingDown,
+  CloudRain, Flame, Wind, Megaphone, BusFront, TrendingUp, Eye,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:5001';
@@ -36,6 +37,7 @@ export function AdminDashboard() {
   const socketRef = useRef<Socket | null>(null);
   const [pipelineEvents, setPipelineEvents] = useState<any[]>([]);
   const [socketConnected, setSocketConnected] = useState(false);
+  const [predictions, setPredictions] = useState<any>(null);
 
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
@@ -133,11 +135,22 @@ export function AdminDashboard() {
     } catch { setError('Failed to update enrollment status'); }
   };
 
+  const fetchPredictions = useCallback(async () => {
+    setL('predictions', true);
+    try {
+      const res = await fetch(`${API}/api/admin/weekly-predictions`, { headers });
+      const data = await res.json();
+      if (res.ok) setPredictions(data);
+      else setError(data.error || 'Failed to fetch predictions');
+    } catch { setError('Failed to load weekly predictions — is ML engine running?'); }
+    setL('predictions', false);
+  }, []);
+
   useEffect(() => { fetchWorkers(); fetchClaims(); fetchAnalytics(); fetchEnrollmentStatus(); }, []);
   useEffect(() => {
     if (activeTab === 'workers') fetchWorkers();
     if (activeTab === 'claims') fetchClaims();
-    if (activeTab === 'analytics') fetchAnalytics();
+    if (activeTab === 'analytics') { fetchAnalytics(); fetchPredictions(); }
   }, [activeTab]);
 
   // ========== TRIGGER SCAN ==========
@@ -531,6 +544,20 @@ export function AdminDashboard() {
                   <p>📧 {w.email}</p>
                   <p>📱 {w.platform || 'Not linked'} • {w.subscriptionStatus === 'active' ? '✅ Subscribed' : '❌ No plan'}</p>
                   {w.subscriptionAmount && <p className="text-slate-600">💰 Premium: ₹{w.subscriptionAmount} • {w.riskTier || 'N/A'}</p>}
+                  {/* 90-Day Eligibility Gate (Social Security Code, 2020 §6) */}
+                  <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md mt-1 ${
+                    w.eligibilityMet 
+                      ? 'bg-emerald-50 border border-emerald-200' 
+                      : 'bg-red-50 border border-red-200'
+                  }`}>
+                    <span className="font-bold">{w.eligibilityMet ? '✅' : '⏳'}</span>
+                    <span className={`font-bold ${w.eligibilityMet ? 'text-emerald-700' : 'text-red-700'}`}>
+                      {w.activeDays ?? '?'}/90 days
+                    </span>
+                    <span className={`text-[10px] ${w.eligibilityMet ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {w.eligibilityMet ? '• SS Code §6 Eligible' : '• Ineligible for payout'}
+                    </span>
+                  </div>
                   {w.lastKnownLocation?.lat && (
                     <p className="text-emerald-600 font-bold">📍 {w.lastKnownLocation.lat.toFixed(4)}°N, {w.lastKnownLocation.lng.toFixed(4)}°E{w.city ? ` • ${w.city}` : ''}</p>
                   )}
@@ -1003,6 +1030,277 @@ export function AdminDashboard() {
                     </div>
                   </div>
                 </motion.div>
+
+                {/* ===== WEEKLY DISRUPTION PREDICTIONS & RECOMMENDATIONS ===== */}
+                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+                  className="col-span-2 bg-white/80 backdrop-blur-sm border border-indigo-200/60 rounded-xl p-6 shadow-sm">
+                  <div className="flex items-center justify-between mb-5">
+                    <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                      <Eye className="w-5 h-5 text-indigo-600" /> Financial Predictions &amp; Disruption Forecast
+                    </h3>
+                    <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                      onClick={fetchPredictions} disabled={loading.predictions}
+                      className="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-bold rounded-lg flex items-center gap-2 text-xs disabled:opacity-50 shadow-md">
+                      {loading.predictions ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Analyzing...</>
+                        : <><TrendingUp className="w-3.5 h-3.5" />Fetch Weekly Predictions</>}
+                    </motion.button>
+                  </div>
+
+                  {!predictions && !loading.predictions && (
+                    <div className="text-center py-8 text-slate-400 font-medium text-sm bg-slate-50 rounded-lg border border-slate-100">
+                      Click "Fetch Weekly Predictions" to run ML disruption analysis for the coming week
+                    </div>
+                  )}
+
+                  {predictions && (
+                    <div className="space-y-5">
+                      {/* City + Weather header */}
+                      <div className="flex items-center gap-3 text-sm">
+                        <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full font-bold text-xs">
+                          📍 {predictions.city || 'Unknown'}
+                        </span>
+                        {predictions.weather?.risk && (
+                          <span className={`px-3 py-1 rounded-full font-bold text-xs ${
+                            predictions.weather.risk.score > 60 ? 'bg-red-100 text-red-700' :
+                            predictions.weather.risk.score > 30 ? 'bg-amber-100 text-amber-700' :
+                            'bg-emerald-100 text-emerald-700'
+                          }`}>
+                            🌦️ Weather Risk: {predictions.weather.risk.score}/100
+                          </span>
+                        )}
+                        <span className={`px-3 py-1 rounded-full font-bold text-xs ${
+                          predictions.weekly_summary?.risk_level === 'Critical' ? 'bg-red-100 text-red-700' :
+                          predictions.weekly_summary?.risk_level === 'High' ? 'bg-orange-100 text-orange-700' :
+                          predictions.weekly_summary?.risk_level === 'Moderate' ? 'bg-amber-100 text-amber-700' :
+                          'bg-emerald-100 text-emerald-700'
+                        }`}>
+                          Week Risk: {predictions.weekly_summary?.risk_level || 'N/A'}
+                        </span>
+                      </div>
+
+                      {/* 7-Day Disruption Forecast Cards */}
+                      <div>
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">7-Day Disruption Probability Forecast</p>
+                        <div className="grid grid-cols-7 gap-2">
+                          {(predictions.predictions || []).map((d: any, i: number) => {
+                            const prob = d.disruption_probability || 0;
+                            const pct = Math.round(prob * 100);
+                            const riskIcons: Record<string, any> = {
+                              monsoon: CloudRain, heatwave: Flame, pollution: Wind, curfew: Megaphone, strike: BusFront,
+                            };
+                            const riskColors: Record<string, string> = {
+                              monsoon: 'text-blue-600', heatwave: 'text-orange-600', pollution: 'text-amber-600',
+                              curfew: 'text-red-600', strike: 'text-purple-600',
+                            };
+                            const RiskIcon = riskIcons[d.dominant_risk] || AlertTriangle;
+                            const isToday = i === 0;
+                            return (
+                              <motion.div key={i} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: i * 0.05 }}
+                                className={`rounded-xl p-3 border text-center transition-all ${
+                                  isToday ? 'border-indigo-300 bg-indigo-50/50 ring-2 ring-indigo-200' :
+                                  pct > 50 ? 'border-red-200 bg-red-50/50' :
+                                  pct > 30 ? 'border-amber-200 bg-amber-50/50' :
+                                  'border-slate-200 bg-slate-50/50'
+                                }`}>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase">
+                                  {isToday ? 'TODAY' : d.day_name?.slice(0, 3)}
+                                </p>
+                                <p className="text-[9px] text-slate-400 mt-0.5">{d.date?.slice(5)}</p>
+                                <div className="my-2">
+                                  <RiskIcon className={`w-5 h-5 mx-auto ${riskColors[d.dominant_risk] || 'text-slate-500'}`} />
+                                </div>
+                                <p className={`text-lg font-black ${
+                                  pct > 50 ? 'text-red-600' : pct > 30 ? 'text-amber-600' : 'text-emerald-600'
+                                }`}>{pct}%</p>
+                                <p className="text-[9px] text-slate-500 font-medium capitalize mt-0.5">{d.dominant_risk}</p>
+                                {/* Mini bar */}
+                                <div className="h-1.5 bg-slate-200 rounded-full mt-2 overflow-hidden">
+                                  <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, pct)}%` }}
+                                    transition={{ delay: i * 0.05 + 0.2, duration: 0.6 }}
+                                    className={`h-full rounded-full ${
+                                      pct > 50 ? 'bg-red-500' : pct > 30 ? 'bg-amber-500' : 'bg-emerald-500'
+                                    }`} />
+                                </div>
+                                {/* Financial impact */}
+                                <p className="text-[9px] font-bold text-slate-500 mt-1.5">
+                                  ~{d.expected_claims} claims
+                                </p>
+                                <p className="text-[9px] font-bold text-purple-600">
+                                  ₹{(d.projected_payout || 0).toLocaleString()}
+                                </p>
+                              </motion.div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Financial Projection Summary */}
+                      <div className="grid grid-cols-4 gap-3">
+                        {[
+                          {
+                            l: 'Projected Payouts (Week)',
+                            v: `₹${(predictions.weekly_summary?.total_projected_payout || 0).toLocaleString()}`,
+                            c: 'text-red-600',
+                          },
+                          {
+                            l: 'Current Pool Balance',
+                            v: `₹${(predictions.weekly_summary?.current_pool_balance || 0).toLocaleString()}`,
+                            c: 'text-cyan-600',
+                          },
+                          {
+                            l: 'Pool After Week',
+                            v: `₹${(predictions.weekly_summary?.projected_pool_after_week || 0).toLocaleString()}`,
+                            c: predictions.weekly_summary?.pool_survives ? 'text-emerald-600' : 'text-red-600',
+                          },
+                          {
+                            l: 'Avg Disruption Prob',
+                            v: `${((predictions.weekly_summary?.avg_disruption_probability || 0) * 100).toFixed(1)}%`,
+                            c: (predictions.weekly_summary?.avg_disruption_probability || 0) > 0.3 ? 'text-amber-600' : 'text-emerald-600',
+                          },
+                        ].map((m, i) => (
+                          <div key={i} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+                            <p className={`text-xl font-black ${m.c}`}>{m.v}</p>
+                            <p className="text-[10px] text-slate-500 font-medium mt-0.5">{m.l}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* AI Recommendations */}
+                      <div>
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">🧠 AI-Powered Recommendations</p>
+                        <div className="space-y-2">
+                          {(predictions.recommendations || []).map((rec: any, i: number) => {
+                            const severityStyles: Record<string, string> = {
+                              critical: 'bg-red-50 border-red-200 text-red-800',
+                              high: 'bg-orange-50 border-orange-200 text-orange-800',
+                              warning: 'bg-amber-50 border-amber-200 text-amber-800',
+                              info: 'bg-blue-50 border-blue-200 text-blue-800',
+                            };
+                            const style = severityStyles[rec.severity] || severityStyles.info;
+                            return (
+                              <motion.div key={i} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: i * 0.08 }}
+                                className={`border rounded-lg p-3.5 ${style}`}>
+                                <div className="flex items-start gap-2">
+                                  <span className="text-base flex-shrink-0 mt-0.5">{rec.icon}</span>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-bold text-sm">{rec.title}</p>
+                                    <p className="text-xs mt-0.5 opacity-80">{rec.description}</p>
+                                    <p className="text-xs mt-1.5 font-bold flex items-center gap-1">
+                                      <Zap className="w-3 h-3" /> {rec.action}
+                                    </p>
+                                  </div>
+                                  <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider ${
+                                    rec.severity === 'critical' ? 'bg-red-200 text-red-800' :
+                                    rec.severity === 'high' ? 'bg-orange-200 text-orange-800' :
+                                    rec.severity === 'warning' ? 'bg-amber-200 text-amber-800' :
+                                    'bg-blue-200 text-blue-800'
+                                  }`}>{rec.severity}</span>
+                                </div>
+
+                                {/* Black Swan opt-in button for critical/high recs mentioning Black Swan */}
+                                {(rec.action || '').toLowerCase().includes('black swan') && (
+                                  <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+                                    onClick={simulateBlackSwan} disabled={loading.blackSwan}
+                                    className="mt-3 w-full py-2 bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 text-white font-bold rounded-lg flex items-center justify-center gap-2 text-xs disabled:opacity-50 shadow-md shadow-red-300 transition-all">
+                                    {loading.blackSwan
+                                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Running Stress Test...</>
+                                      : <><TrendingDown className="w-3.5 h-3.5" />🦢 Run 14-Day Black Swan Stress Test</>}
+                                  </motion.button>
+                                )}
+                              </motion.div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Black Swan Result (inline) */}
+                      {blackSwanResult && (
+                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                          className="bg-gradient-to-r from-red-50 to-rose-50 border border-red-200 rounded-xl p-5 space-y-3">
+                          <h4 className="text-sm font-extrabold text-red-900 flex items-center gap-2">
+                            <TrendingDown className="w-4 h-4" /> 🦢 Black Swan Simulation Result
+                          </h4>
+                          <div className="grid grid-cols-4 gap-3">
+                            {[
+                              { l: 'Days Simulated', v: blackSwanResult.simulationDays, c: 'text-slate-800' },
+                              { l: 'Workers Hit', v: blackSwanResult.workersAffected, c: 'text-amber-600' },
+                              { l: 'Total Payouts', v: `₹${blackSwanResult.totalPayouts}`, c: 'text-red-600' },
+                              { l: 'Final Pool', v: `₹${blackSwanResult.finalPoolBalance}`, c: blackSwanResult.poolDrained ? 'text-red-600' : 'text-amber-600' },
+                            ].map((k, i) => (
+                              <div key={i} className="bg-white/80 border border-red-100 rounded-lg p-3 text-center">
+                                <p className={`text-xl font-black ${k.c}`}>{k.v}</p>
+                                <p className="text-[10px] text-slate-500 font-medium mt-0.5">{k.l}</p>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="bg-white/80 border border-red-100 rounded-lg p-4">
+                            <p className="text-[10px] font-bold text-slate-600 mb-2">📉 Pool Drain Timeline</p>
+                            <div className="flex items-end gap-1 h-14">
+                              {(blackSwanResult.events || []).map((e: any, i: number) => {
+                                const maxBal = blackSwanResult.seedBalance || 1;
+                                const pct = Math.max(4, Math.round((e.runningBalance / maxBal) * 100));
+                                return (
+                                  <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
+                                    <div className={`w-full rounded-sm ${e.poolDrained ? 'bg-red-500' : pct < 30 ? 'bg-amber-400' : 'bg-cyan-500'}`}
+                                      style={{ height: `${pct}%` }} />
+                                    <span className="text-[8px] text-slate-400">D{e.day}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          {blackSwanResult.poolDrained && (
+                            <div className="bg-red-100 border border-red-300 rounded-lg p-3 flex items-center gap-2 text-xs font-bold text-red-800">
+                              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                              Pool drained on Day {(blackSwanResult.events || []).find((e: any) => e.poolDrained)?.day ?? '—'}. Enrollment suspension recommended.
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
+
+                      {/* Disruption Type Heatmap */}
+                      <div>
+                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Disruption Type Probability Matrix</p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px]">
+                            <thead>
+                              <tr className="border-b border-slate-200">
+                                <th className="text-left p-2 font-bold text-slate-600">Day</th>
+                                {['monsoon', 'heatwave', 'pollution', 'curfew', 'strike'].map(t => (
+                                  <th key={t} className="p-2 font-bold text-slate-600 capitalize text-center">{t}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(predictions.predictions || []).map((d: any, i: number) => (
+                                <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                                  <td className="p-2 font-bold text-slate-700">{d.day_name?.slice(0, 3)} {d.date?.slice(5)}</td>
+                                  {['monsoon', 'heatwave', 'pollution', 'curfew', 'strike'].map(t => {
+                                    const val = (d.type_probabilities?.[t] || 0);
+                                    const pct = Math.round(val * 100);
+                                    return (
+                                      <td key={t} className="p-2 text-center">
+                                        <span className={`inline-block px-2 py-0.5 rounded font-black ${
+                                          pct > 40 ? 'bg-red-200 text-red-800' :
+                                          pct > 20 ? 'bg-amber-200 text-amber-800' :
+                                          pct > 10 ? 'bg-yellow-100 text-yellow-800' :
+                                          'bg-slate-100 text-slate-500'
+                                        }`}>{pct}%</span>
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </motion.div>
+
                 <div className="bg-white/80 backdrop-blur-sm border border-slate-200/60 shadow-sm rounded-xl p-5">
                   <h3 className="text-sm font-bold text-slate-800 mb-4">📋 Claims Breakdown</h3>
                   <div className="space-y-3">

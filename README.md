@@ -192,3 +192,138 @@ Vision AI Resolution: This photo is processed via a lightweight Vision AI model 
 * **Phase 1 (Weeks 1-2):** Foundation. Finalize persona, define weekly pricing model, design architecture, and establish the GitHub repository.
 * **Phase 2 (Weeks 3-4):** Automation. Develop the AASARA App Simulator, implement the smart premium calculation engine, and integrate 3-5 parametric API triggers.
 * **Phase 3 (Weeks 5-6):** Scale. Deploy the automated AI fraud detection models, finalize the simulated instant payout system, and build the analytics dashboard.
+
+---
+
+## 📊 8. Financial Predictions & Disruption Forecast (NEW)
+
+The Admin Analytics dashboard now includes a **7-Day AI-Powered Disruption Forecast** that combines our ML engine's seasonal disruption models with real-time financial pool data to give administrators full visibility into upcoming risk and liquidity.
+
+### What It Shows
+| Section | Description |
+| :--- | :--- |
+| **7-Day Disruption Probability Forecast** | Day-by-day cards showing dominant disruption type (monsoon, heatwave, pollution, curfew, strike), probability %, expected claims count, and projected payout amounts. |
+| **Financial Projection Summary** | 4 KPI cards: total projected payouts for the week, current pool balance, projected pool balance after the week, and average disruption probability. |
+| **AI-Powered Recommendations** | Severity-coded cards (critical / high / warning / info) with actionable suggestions — e.g., "Increase premium tier," "Pause new enrollments," "Activate reserve fund." |
+| **Black Swan Stress Test (Opt-in)** | Inline button to run a 14-day catastrophic scenario simulation. Displays drain timeline, workers affected, total payouts, and pool survival status. |
+| **Disruption Type Probability Matrix** | Heatmap table (7 days × 5 disruption types) for granular risk analysis. |
+
+### How It Works
+1. The frontend calls `GET /api/admin/weekly-predictions` from the Analytics tab.
+2. The backend queries the ML engine (`POST /api/ml/risk-analysis`) for 7-day disruption probabilities using seasonal patterns, city risk modifiers, weather amplification, and zone safety data.
+3. Financial projections are computed by combining ML predictions with actual MongoDB pool balance, active worker count, and historical claim averages.
+4. AI recommendations are auto-generated based on risk thresholds, pool solvency projections, and dominant disruption types.
+
+---
+
+## 🖥️ 9. Running AASARA AI Locally
+
+### Prerequisites
+- **Node.js** v18+ and **npm**
+- **Python** 3.10+ and **pip**
+- **MongoDB Atlas** account (or local MongoDB)
+- **Git**
+
+### Step 1: Clone the Repository
+```bash
+git clone https://github.com/your-username/AASARA-AI-2.git
+cd AASARA-AI-2
+```
+
+### Step 2: Backend — Node.js Server
+```bash
+cd backend/server
+npm install
+```
+
+Create a `.env` file in `backend/server/` with the following keys:
+```env
+PORT=5001
+MONGODB_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/<db>
+JWT_SECRET=your-jwt-secret
+ML_ENGINE_URL=http://localhost:5002
+OPENWEATHERMAP_API_KEY=your-openweathermap-key
+
+# Optional — gracefully skipped if missing
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_PHONE_NUMBER=
+BREVO_API_KEY=
+BREVO_SENDER_EMAIL=
+BREVO_SENDER_NAME=Aasara AI
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+```
+
+Seed the database (first-time only):
+```bash
+node scripts/seedAdmin.js      # Creates admin@aasara.ai / admin123456
+node scripts/seedWorkers.js     # Creates 40 demo workers + pool + claims
+```
+
+Start the server:
+```bash
+node index.js
+# ✅ Server runs on http://localhost:5001
+```
+
+### Step 3: Backend — ML Engine (Python)
+```bash
+cd backend/ml_engine
+pip install -r requirements.txt
+```
+
+Create a `.env` file in `backend/ml_engine/` (optional — defaults work):
+```env
+ML_ENGINE_PORT=5002
+OPENWEATHERMAP_API_KEY=your-openweathermap-key
+NEWSDATA_API_KEY=your-newsdata-key
+WAQI_API_TOKEN=your-waqi-token
+```
+
+Start the ML engine:
+```bash
+python app.py
+# ✅ ML Engine runs on http://localhost:5002
+```
+
+### Step 4: Frontend — Web Dashboard
+```bash
+cd frontend/web
+npm install
+```
+
+Create a `.env` file in `frontend/web/`:
+```env
+VITE_API_URL=http://localhost:5001
+```
+
+Start the dev server:
+```bash
+npm run dev
+# ✅ Web app runs on http://localhost:5173
+```
+
+### Step 5: Frontend — Mobile App (Expo)
+```bash
+cd frontend/mobile
+npm install
+npx expo start
+# Scan the QR code with Expo Go on your phone
+```
+
+### Quick Verification
+Once all services are running:
+1. Open **http://localhost:5173** in your browser
+2. Login as admin: `admin@aasara.ai` / `admin123456`
+3. Navigate to the **Analytics** tab → click **"Fetch Weekly Predictions"**
+4. Navigate to the **Fraud** tab to test fraud detection
+5. Navigate to the **Command Center** to trigger disruptions and observe real-time payouts
+
+### Service Summary
+| Service | Port | Start Command |
+| :--- | :--- | :--- |
+| Node.js API Server | `5001` | `cd backend/server && node index.js` |
+| Python ML Engine | `5002` | `cd backend/ml_engine && python app.py` |
+| Web Dashboard (Vite) | `5173` | `cd frontend/web && npm run dev` |
+| Mobile App (Expo) | `8081` | `cd frontend/mobile && npx expo start` |

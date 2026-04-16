@@ -25,8 +25,8 @@ const BASE_DATE          = new Date('2026-04-04T00:00:00Z');
 // ─── Indian gig worker data ─────────────────────────────────────────────────
 const WORKERS = [
   // Mumbai
-  { name: 'Ravi Kumar',       email: 'ravi.kumar@gmail.com',        phone: '9876543210', city: 'Mumbai',    platform: 'zomato',  plan: 'basic',   daysAgo: 42, premium: 350 },
-  { name: 'Priya Sharma',     email: 'priya.sharma@gmail.com',      phone: '9876543211', city: 'Mumbai',    platform: 'swiggy',  plan: 'premium', daysAgo: 38, premium: 490 },
+  { name: 'Ravi Kumar',       email: 'ravi.kumar@gmail.com',        phone: '9876543210', city: 'Mumbai',    platform: 'zomato',  plan: 'basic',   daysAgo: 120, premium: 350 },
+  { name: 'Priya Sharma',     email: 'priya.sharma@gmail.com',      phone: '9876543211', city: 'Mumbai',    platform: 'swiggy',  plan: 'premium', daysAgo: 105, premium: 490 },
   { name: 'Mohammed Salim',   email: 'salim.delivery@gmail.com',    phone: '9876543212', city: 'Mumbai',    platform: 'zomato',  plan: 'basic',   daysAgo: 31, premium: 385 },
   { name: 'Sunita Patil',     email: 'sunita.patil@gmail.com',      phone: '9876543213', city: 'Mumbai',    platform: 'swiggy',  plan: 'premium', daysAgo: 27, premium: 525 },
   { name: 'Arjun Nair',       email: 'arjun.nair@gmail.com',        phone: '9876543214', city: 'Mumbai',    platform: 'dunzo',   plan: 'basic',   daysAgo: 19, premium: 315 },
@@ -35,7 +35,7 @@ const WORKERS = [
   { name: 'Meena Gupta',      email: 'meena.gupta@gmail.com',       phone: '9876543217', city: 'Mumbai',    platform: 'zomato',  plan: 'basic',   daysAgo: 8,  premium: 370 },
 
   // Delhi
-  { name: 'Aakash Singh',     email: 'aakash.singh@gmail.com',      phone: '9876543218', city: 'Delhi',     platform: 'zomato',  plan: 'premium', daysAgo: 44, premium: 560 },
+  { name: 'Aakash Singh',     email: 'aakash.singh@gmail.com',      phone: '9876543218', city: 'Delhi',     platform: 'zomato',  plan: 'premium', daysAgo: 110, premium: 560 },
   { name: 'Pooja Verma',      email: 'pooja.verma@gmail.com',       phone: '9876543219', city: 'Delhi',     platform: 'swiggy',  plan: 'basic',   daysAgo: 36, premium: 310 },
   { name: 'Deepak Chauhan',   email: 'deepak.chauhan@gmail.com',    phone: '9876543220', city: 'Delhi',     platform: 'dunzo',   plan: 'premium', daysAgo: 30, premium: 480 },
   { name: 'Kavita Mishra',    email: 'kavita.mishra@gmail.com',     phone: '9876543221', city: 'Delhi',     platform: 'zomato',  plan: 'basic',   daysAgo: 22, premium: 325 },
@@ -44,8 +44,8 @@ const WORKERS = [
   { name: 'Vikram Thakur',    email: 'vikram.thakur@gmail.com',     phone: '9876543224', city: 'Delhi',     platform: 'swiggy',  plan: 'basic',   daysAgo: 7,  premium: 295 },
 
   // Bangalore
-  { name: 'Suresh Reddy',     email: 'suresh.reddy@gmail.com',      phone: '9876543225', city: 'Bangalore', platform: 'zomato',  plan: 'premium', daysAgo: 45, premium: 575 },
-  { name: 'Lakshmi Devi',     email: 'lakshmi.devi@gmail.com',      phone: '9876543226', city: 'Bangalore', platform: 'swiggy',  plan: 'basic',   daysAgo: 39, premium: 330 },
+  { name: 'Suresh Reddy',     email: 'suresh.reddy@gmail.com',      phone: '9876543225', city: 'Bangalore', platform: 'zomato',  plan: 'premium', daysAgo: 115, premium: 575 },
+  { name: 'Lakshmi Devi',     email: 'lakshmi.devi@gmail.com',      phone: '9876543226', city: 'Bangalore', platform: 'swiggy',  plan: 'basic',   daysAgo: 95, premium: 330 },
   { name: 'Kiran Gowda',      email: 'kiran.gowda@gmail.com',       phone: '9876543227', city: 'Bangalore', platform: 'dunzo',   plan: 'premium', daysAgo: 32, premium: 495 },
   { name: 'Nandini Rao',      email: 'nandini.rao@gmail.com',       phone: '9876543228', city: 'Bangalore', platform: 'zomato',  plan: 'basic',   daysAgo: 24, premium: 355 },
   { name: 'Prasad Hegde',     email: 'prasad.hegde@gmail.com',      phone: '9876543229', city: 'Bangalore', platform: 'swiggy',  plan: 'premium', daysAgo: 18, premium: 520 },
@@ -53,21 +53,21 @@ const WORKERS = [
   { name: 'Harish Kumar',     email: 'harish.kumar.blr@gmail.com',  phone: '9876543231', city: 'Bangalore', platform: 'swiggy',  plan: 'basic',   daysAgo: 6,  premium: 305 },
 
   // Hyderabad
-  { name: 'Ramesh Babu',      email: 'ramesh.babu@gmail.com',       phone: '9876543232', city: 'Hyderabad', platform: 'zomato',  plan: 'premium', daysAgo: 40, premium: 545 },
+  { name: 'Ramesh Babu',      email: 'ramesh.babu@gmail.com',       phone: '9876543232', city: 'Hyderabad', platform: 'zomato',  plan: 'premium', daysAgo: 100, premium: 545 },
   { name: 'Swaroopa Rani',    email: 'swaroopa.rani@gmail.com',     phone: '9876543233', city: 'Hyderabad', platform: 'swiggy',  plan: 'basic',   daysAgo: 34, premium: 320 },
   { name: 'Naresh Yadav',     email: 'naresh.yadav.hyd@gmail.com',  phone: '9876543234', city: 'Hyderabad', platform: 'dunzo',   plan: 'premium', daysAgo: 28, premium: 465 },
   { name: 'Padmaja Reddy',    email: 'padmaja.reddy@gmail.com',     phone: '9876543235', city: 'Hyderabad', platform: 'zomato',  plan: 'basic',   daysAgo: 20, premium: 335 },
   { name: 'Srikanth Rao',     email: 'srikanth.rao@gmail.com',      phone: '9876543236', city: 'Hyderabad', platform: 'swiggy',  plan: 'premium', daysAgo: 13, premium: 500 },
 
   // Chennai
-  { name: 'Murugan Selvam',   email: 'murugan.selvam@gmail.com',    phone: '9876543237', city: 'Chennai',   platform: 'zomato',  plan: 'basic',   daysAgo: 43, premium: 345 },
+  { name: 'Murugan Selvam',   email: 'murugan.selvam@gmail.com',    phone: '9876543237', city: 'Chennai',   platform: 'zomato',  plan: 'basic',   daysAgo: 98, premium: 345 },
   { name: 'Kavitha Rajan',    email: 'kavitha.rajan@gmail.com',     phone: '9876543238', city: 'Chennai',   platform: 'swiggy',  plan: 'premium', daysAgo: 37, premium: 487 },
   { name: 'Senthil Kumar',    email: 'senthil.kumar@gmail.com',     phone: '9876543239', city: 'Chennai',   platform: 'dunzo',   plan: 'basic',   daysAgo: 29, premium: 360 },
   { name: 'Anbu Selvi',       email: 'anbu.selvi@gmail.com',        phone: '9876543240', city: 'Chennai',   platform: 'zomato',  plan: 'premium', daysAgo: 21, premium: 515 },
   { name: 'Dinesh Babu',      email: 'dinesh.babu.chn@gmail.com',   phone: '9876543241', city: 'Chennai',   platform: 'swiggy',  plan: 'basic',   daysAgo: 9,  premium: 330 },
 
   // Pune
-  { name: 'Amol Pawar',       email: 'amol.pawar@gmail.com',        phone: '9876543242', city: 'Pune',      platform: 'zomato',  plan: 'premium', daysAgo: 41, premium: 555 },
+  { name: 'Amol Pawar',       email: 'amol.pawar@gmail.com',        phone: '9876543242', city: 'Pune',      platform: 'zomato',  plan: 'premium', daysAgo: 102, premium: 555 },
   { name: 'Sneha Kulkarni',   email: 'sneha.kulkarni@gmail.com',    phone: '9876543243', city: 'Pune',      platform: 'swiggy',  plan: 'basic',   daysAgo: 35, premium: 315 },
   { name: 'Sachin More',      email: 'sachin.more.pune@gmail.com',  phone: '9876543244', city: 'Pune',      platform: 'dunzo',   plan: 'premium', daysAgo: 26, premium: 475 },
   { name: 'Rupali Jadhav',    email: 'rupali.jadhav@gmail.com',     phone: '9876543245', city: 'Pune',      platform: 'zomato',  plan: 'basic',   daysAgo: 17, premium: 325 },

@@ -40,6 +40,8 @@ export function RealTimeDashboard() {
   const [showClaims, setShowClaims] = useState(false);
   const [activeDisruption, setActiveDisruption] = useState<any>(null);
   const [claimsHistory, setClaimsHistory] = useState<any[]>([]);
+  const [activeDays, setActiveDays] = useState<number | null>(null);
+  const [eligibilityMet, setEligibilityMet] = useState<boolean>(false);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -185,6 +187,8 @@ export function RealTimeDashboard() {
           const tier = (data.subscription.riskTier || 'Moderate').replace(/^[🟢🟡🔴⚪]\s*/, '');
           setRiskTier(tier);
           setPlatform(data.subscription.platform || '');
+          setActiveDays(data.subscription.activeDays ?? null);
+          setEligibilityMet(data.subscription.eligibilityMet ?? false);
         }
       }
     } catch (e) { console.error('Subscription load error', e); }
@@ -474,6 +478,46 @@ export function RealTimeDashboard() {
             <p className="text-emerald-700 text-sm font-bold">7 Days</p>
           </div>
         </motion.div>
+
+        {/* ====== 90-DAY ELIGIBILITY STATUS (Social Security Code, 2020 §6) ====== */}
+        {activeDays !== null && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`border rounded-xl p-4 flex items-center justify-between shadow-sm ${
+              eligibilityMet
+                ? 'bg-emerald-50 border-emerald-200'
+                : 'bg-amber-50 border-amber-200'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                eligibilityMet ? 'bg-emerald-100' : 'bg-amber-100'
+              }`}>
+                <span className="text-lg">{eligibilityMet ? '🛡️' : '⏳'}</span>
+              </div>
+              <div>
+                <p className={`font-semibold text-sm ${eligibilityMet ? 'text-emerald-800' : 'text-amber-800'}`}>
+                  {eligibilityMet ? '✅ Payout Eligible' : '⏳ Eligibility Pending'}
+                </p>
+                <p className={`text-xs ${eligibilityMet ? 'text-emerald-600' : 'text-amber-600'}`}>
+                  Social Security Code, 2020 §6 — {activeDays}/90 active days
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="w-24 bg-slate-200 rounded-full h-2.5 mb-1">
+                <div
+                  className={`h-2.5 rounded-full transition-all ${eligibilityMet ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                  style={{ width: `${Math.min((activeDays / 90) * 100, 100)}%` }}
+                />
+              </div>
+              <p className={`text-xs font-bold ${eligibilityMet ? 'text-emerald-700' : 'text-amber-700'}`}>
+                {eligibilityMet ? 'Fully Eligible' : `${90 - activeDays} days remaining`}
+              </p>
+            </div>
+          </motion.div>
+        )}
 
         {/* ====== DETECTED TRIGGERS (Real-time from Admin) ====== */}
         <AnimatePresence>
