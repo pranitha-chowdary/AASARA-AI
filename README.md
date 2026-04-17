@@ -3,7 +3,7 @@
 ### 🎥 2-Minute Pitch & Prototype Demonstration
 
 <p align="center">
-  <a href="https://youtu.be/pWHEuTRPJzI">
+  <a href="https://www.youtube.com/watch?v=pWHEuTRPJzI"
     <img src="https://drive.google.com/thumbnail?id=13iIjP66dsZundkp3ByhkUBuIc7JHJqqx&sz=w1000" width="600">
   </a>
 </p>
