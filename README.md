@@ -304,12 +304,63 @@ npm run dev
 # ✅ Web app runs on http://localhost:5173
 ```
 
-### Step 5: Frontend — Mobile App (Expo)
+### Step 5: Frontend — Mobile App (React Native / Expo)
+
 ```bash
 cd frontend/mobile
 npm install
-npx expo start
-# Scan the QR code with Expo Go on your phone
+```
+
+#### Option A: Run on a Physical Device with Expo Go
+
+> **Expo Go** lets you preview the app on your real phone without building a native binary.
+
+1. Install **Expo Go** from the [Google Play Store](https://play.google.com/store/apps/details?id=host.exp.exponent) (Android) or [App Store](https://apps.apple.com/app/expo-go/id982107779) (iOS).
+2. Make sure your **phone and computer are on the same Wi-Fi network**.
+3. Start the Expo dev server:
+   ```bash
+   npx expo start
+   ```
+4. A QR code will appear in your terminal. Scan it:
+   - **Android:** Open **Expo Go** → tap **"Scan QR Code"**
+   - **iOS:** Open the default **Camera** app → point at the QR code → tap the Expo banner
+5. The app will bundle and load on your device.
+
+> **Tip — Backend connectivity:** The mobile app auto-detects your dev machine's LAN IP from the Expo dev server, so `http://<your-lan-ip>:5001/api` is used automatically. If you face connection issues, set the URL explicitly:
+> ```bash
+> EXPO_PUBLIC_API_URL=http://<your-lan-ip>:5001/api npx expo start
+> ```
+> Replace `<your-lan-ip>` with your computer's local IP (e.g., `192.168.1.42`). Find it via `ipconfig` (Windows) or `ifconfig | grep inet` (macOS/Linux).
+
+#### Option B: Run on Android Emulator
+
+1. Install [Android Studio](https://developer.android.com/studio) and set up an AVD (Android Virtual Device) via the **Device Manager**.
+2. Launch the emulator from Android Studio.
+3. Start Expo with the Android flag:
+   ```bash
+   npx expo start --android
+   ```
+   Expo will automatically detect the running emulator and install the app.
+
+> On an Android emulator, `10.0.2.2` maps to your host machine's `localhost`, and the app handles this automatically.
+
+#### Option C: Run on iOS Simulator (macOS only)
+
+1. Install **Xcode** from the Mac App Store.
+2. Start Expo with the iOS flag:
+   ```bash
+   npx expo start --ios
+   ```
+
+#### Tunnel Mode (Firewall / Different Networks)
+
+If your phone and computer are on different networks or behind a firewall:
+```bash
+npx expo start --tunnel
+```
+This routes traffic through an Expo proxy. You may need to install `@expo/ngrok` the first time:
+```bash
+npm install -g @expo/ngrok@^4.1.0
 ```
 
 ### Quick Verification
