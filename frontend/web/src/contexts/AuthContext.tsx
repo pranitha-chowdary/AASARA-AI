@@ -284,6 +284,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = async () => {
     try {
       localStorage.removeItem('authToken');
+      localStorage.removeItem('adminToken');
       setToken(null);
       setUser(null);
       setUserType(null);

@@ -415,7 +415,18 @@ app.post('/api/auth/signin', async (req, res) => {
 // Get current user
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
+    // Handle admin tokens (admin JWT has adminId + role, not userId)
+    if (req.user.role === 'admin') {
+      return res.json({
+        _id: req.user.adminId,
+        email: req.user.email,
+        fullName: 'Admin',
+        phoneNumber: '',
+        userType: 'admin',
+      });
+    }
     const user = await User.findById(req.user.userId).select('-password');
+    if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
   } catch (err) {
     res.status(500).json({ error: err.message });
