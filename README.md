@@ -9,6 +9,10 @@
 </p>
 
 *(Click the image above to watch our full presentation)*
+
+### 📑 Pitch Deck
+> [**View our Pitch Deck on Google Drive**](https://drive.google.com/file/d/1x__SooKIq6SVP_7q66zPpeU7vJtMQl4b/view?usp=sharing)
+
 ## 🔐 Live Demo and Credentials
 To evaluate the platform, please use the following mock accounts on our live  deployment. 
 

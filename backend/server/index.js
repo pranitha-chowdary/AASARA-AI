@@ -63,7 +63,7 @@ const { User, Telemetry, Worker, Disruption, Claim, PremiumHistory, Onboarding, 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Configure CORS — allow localhost (dev) + any Netlify/Railway/Render deploy
+// Configure CORS — allow localhost (dev) + any Netlify/Render deploy
 const EXTRA_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
@@ -77,7 +77,6 @@ app.use(cors({
       origin.includes('192.168.') ||
       origin.includes('172.') ||
       origin.endsWith('.netlify.app') ||
-      origin.endsWith('.railway.app') ||
       origin.endsWith('.onrender.com') ||
       EXTRA_ORIGINS.includes(origin);
     if (allowed) {
@@ -103,7 +102,6 @@ const io = new SocketIOServer(server, {
         origin.includes('localhost') ||
         origin.includes('127.0.0.1') ||
         origin.endsWith('.netlify.app') ||
-        origin.endsWith('.railway.app') ||
         origin.endsWith('.onrender.com') ||
         EXTRA_ORIGINS.includes(origin);
       callback(null, allowed);
@@ -143,7 +141,7 @@ function emitPipelineEvent(workerId, eventName, data) {
   io.to('role:admin').emit(eventName, data);
 }
 
-// Health check (used by Railway / Render / load balancers)
+// Health check (used by Render / load balancers)
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 const MONGODB_URI = process.env.MONGODB_URI;
