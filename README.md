@@ -1,6 +1,6 @@
 # AASARA AI: The Safety Net for India's Gig Economy 
 
-### 🎥 2-Minute Pitch & Prototype Demonstration
+### 🎥 5-Minute Pitch & Prototype Demonstration
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=pWHEuTRPJzI">
